@@ -137,8 +137,10 @@ export class TransactionService {
     try {
       const users: any = await getUsers();
       console.log("length is ", users.length);
-
+      const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
       for (const user of users) {
+        await delay(200); // 200ms delay between users
+
         const runningEntry = await getRunningEntry(user.id);
         const lastTimerId = this.previousStates.get(user.id);
 
