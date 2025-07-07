@@ -135,7 +135,8 @@ export class TransactionService {
 
   public getClockify = async (): Promise<void> => {
     try {
-      const users = await getUsers();
+      const users: any = await getUsers();
+      console.log("length is ", users.length);
 
       for (const user of users) {
         const runningEntry = await getRunningEntry(user.id);
@@ -195,14 +196,37 @@ export class TransactionService {
       }
     } catch (err: any) {
       console.error("❌ Error in getClockify:", err.message || err);
-      throw new Error("Error while fetching Clockify data.");
     }
   };
 }
 
 export const getUsers = async () => {
-  const res = await clockify.get(`/workspaces/${WORKSPACE_ID}/users`);
-  return res.data;
+  // const res = await clockify.get(`/workspaces/${WORKSPACE_ID}/users`);
+  // return res.data;
+  const allUsers: any[] = [];
+  let page = 1;
+  const pageSize = 100; // maximum allowed
+
+  while (true) {
+    const res = await clockify.get(`/workspaces/${WORKSPACE_ID}/users`, {
+      params: {
+        page,
+        "page-size": pageSize,
+      },
+    });
+
+    const users = res.data;
+
+    allUsers.push(...users);
+
+    if (users.length < pageSize) {
+      break;
+    }
+
+    page++;
+  }
+
+  return allUsers;
 };
 
 export const getRunningEntry = async (userId: string) => {
