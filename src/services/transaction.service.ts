@@ -4,6 +4,7 @@ import moment from "moment";
 import dotenv from "dotenv";
 import fs, { stat } from "fs";
 import path from "path";
+import * as XLSX from "xlsx";
 
 dotenv.config();
 
@@ -13,6 +14,9 @@ const clockify = axios.create({
 });
 const WORKSPACE_ID = process.env.CLOCKIFY_WORKSPACE_ID as string;
 const FILE_PATH = path.join(__dirname, "../utils/clockifyStates.json");
+
+const filePath = path.join(__dirname, "../attendance.xlsx");
+const sheetName = "Attendance";
 
 export class TransactionService {
   private previousStates = new Map<string, string>(); // userId => timerId
@@ -26,7 +30,7 @@ export class TransactionService {
     let jwtToken = process.env.JWT_TOKEN as string;
 
     const endTime = moment();
-    const startTime = moment().subtract(1, "minutes");
+    const startTime = moment().subtract(216, "minutes");
 
     const formattedStart = startTime.format("YYYY-MM-DD HH:mm:ss");
     const formattedEnd = endTime.format("YYYY-MM-DD HH:mm:ss");
@@ -56,6 +60,19 @@ export class TransactionService {
             punch.punch_time,
             punch.punch_state_display
           );
+          const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
+          const formattedDate = punchMoment.format("MMMM DD, YYYY");
+          const formattedTime = punchMoment.format("hh:mm A");
+          appendToAttendanceSheet({
+            Name: fullName,
+            UserID: String(punch.emp_code),
+            Date: formattedDate,
+            Time: formattedTime,
+            Status: punch.punch_state_display,
+            Total_Hour: "",
+            Source: "Zkteco",
+            Project: "",
+          });
         }
       } else {
         console.log("⚠️ No punches found in response.");
@@ -97,6 +114,19 @@ export class TransactionService {
               punch.punch_time,
               punch.punch_state_display
             );
+            const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
+            const formattedDate = punchMoment.format("MMMM DD, YYYY");
+            const formattedTime = punchMoment.format("hh:mm A");
+            appendToAttendanceSheet({
+              Name: fullName,
+              UserID: String(punch.emp_code),
+              Date: formattedDate, // e.g., "2025 || July | Wednesday"
+              Time: formattedTime, // e.g., "09:22 AM"
+              Status: punch.punch_state_display,
+              Total_Hour: "",
+              Source: "Zkteco",
+              Project: "",
+            });
           }
         } else {
           console.log("⚠️ No punches found in retry response.");
@@ -159,6 +189,22 @@ export class TransactionService {
               project,
               true
             );
+            const punchMoment = moment(
+              runningEntry?.timeInterval?.start,
+              "YYYY-MM-DD HH:mm:ss"
+            );
+            const formattedDate = punchMoment.format("MMMM DD, YYYY");
+            const formattedTime = punchMoment.format("hh:mm A");
+            appendToAttendanceSheet({
+              Name: user.name,
+              UserID: "",
+              Date: formattedDate,
+              Time: formattedTime,
+              Status: "Signing In",
+              Total_Hour: "",
+              Source: "Clockify",
+              Project: project,
+            });
           }
         } else {
           if (lastTimerId) {
@@ -186,6 +232,22 @@ export class TransactionService {
                 project,
                 true
               );
+              const punchMoment = moment(
+                runningEntry?.timeInterval?.start,
+                "YYYY-MM-DD HH:mm:ss"
+              );
+              const formattedDate = punchMoment.format("MMMM DD, YYYY");
+              const formattedTime = punchMoment.format("hh:mm A");
+              appendToAttendanceSheet({
+                Name: user.name,
+                UserID: "",
+                Date: formattedDate,
+                Time: formattedTime,
+                Status: "Signing off",
+                Total_Hour: worked,
+                Source: "Clockify",
+                Project: project,
+              });
             } else {
               console.warn(
                 `⚠️ Last time entry not found or mismatched for ${user.name}`
@@ -299,3 +361,54 @@ function formatDuration(totalSeconds: number): string {
 
   return parts.join(" ");
 }
+
+export const appendToAttendanceSheet = async (entry: any) => {
+  let workbook, worksheet;
+
+  const headers = [
+    "Name",
+    "UserID",
+    "Date",
+    "Time",
+    "Status",
+    "Total_Hour",
+    "Source",
+    "Project",
+  ];
+
+  if (fs.existsSync(filePath)) {
+    workbook = XLSX.readFile(filePath);
+    worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) {
+      worksheet = XLSX.utils.aoa_to_sheet([headers]);
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    }
+  } else {
+    workbook = XLSX.utils.book_new();
+    worksheet = XLSX.utils.aoa_to_sheet([headers]);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+  }
+
+  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[];
+
+  const newRow = [
+    entry.Name,
+    entry.UserID,
+    entry.Date,
+    entry.Time,
+    entry.Status,
+    entry.Total_Hour || "",
+    entry.Source,
+    entry.Project || "",
+  ];
+
+  data.push(newRow);
+
+  const updatedSheet = XLSX.utils.aoa_to_sheet(data);
+
+  // 👇 Only replace the sheet content, don't re-append it
+  workbook.Sheets[sheetName] = updatedSheet;
+
+  XLSX.writeFile(workbook, filePath);
+  console.log(`✅ Attendance saved for ${entry.Name} (${entry.Source})`);
+};
