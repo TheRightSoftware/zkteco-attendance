@@ -16,8 +16,14 @@ const WORKSPACE_ID = process.env.CLOCKIFY_WORKSPACE_ID as string;
 const FILE_PATH = path.join(__dirname, "../utils/clockifyStates.json");
 
 const filePath = path.join(__dirname, "../attendance.xlsx");
+const zktecoFilePath = path.join(__dirname, "../utils/lastFetchedTime.json");
+const processedPunchesFilePath = path.join(
+  __dirname,
+  "../utils/processedPunches.json"
+);
 const sheetName = "Attendance";
 
+var punchSet = new Set<string>();
 export class TransactionService {
   private previousStates = new Map<string, string>(); // userId => timerId
   constructor() {
@@ -25,12 +31,18 @@ export class TransactionService {
   }
 
   public fetchTransactions = async (): Promise<any> => {
-    const deviceUrl = process.env.DEVICE_URL as string;
+    console.log("here");
 
+    const deviceUrl = process.env.DEVICE_URL as string;
     let jwtToken = process.env.JWT_TOKEN as string;
 
+    await loadPunchCache();
+
+    const lastFetchedTime = await getLastFetchedTime();
+    console.log("last fetched Time", lastFetchedTime);
+
     const endTime = moment();
-    const startTime = moment().subtract(216, "minutes");
+    const startTime = lastFetchedTime.clone().subtract(10, "seconds");
 
     const formattedStart = startTime.format("YYYY-MM-DD HH:mm:ss");
     const formattedEnd = endTime.format("YYYY-MM-DD HH:mm:ss");
@@ -51,6 +63,10 @@ export class TransactionService {
       const punches = response.data?.data;
       if (Array.isArray(punches) && punches.length > 0) {
         for (const punch of punches) {
+          const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
+          if (isDuplicate(uniqueKey)) continue;
+          markAsProcessed(uniqueKey);
+
           const fullName = punch.last_name
             ? `${punch.first_name} ${punch.last_name}`
             : punch.first_name;
@@ -77,6 +93,9 @@ export class TransactionService {
       } else {
         console.log("⚠️ No punches found in response.");
       }
+
+      setLastFetchedTime(endTime);
+      savePunchCache();
 
       return response.data;
     } catch (error: any) {
@@ -105,6 +124,10 @@ export class TransactionService {
         const punches = retryResponse.data?.data;
         if (Array.isArray(punches) && punches.length > 0) {
           for (const punch of punches) {
+            const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
+            if (isDuplicate(uniqueKey)) continue;
+            markAsProcessed(uniqueKey);
+
             const fullName = punch.last_name
               ? `${punch.first_name} ${punch.last_name}`
               : punch.first_name;
@@ -132,6 +155,8 @@ export class TransactionService {
           console.log("⚠️ No punches found in retry response.");
         }
 
+        setLastFetchedTime(endTime);
+        savePunchCache();
         return retryResponse.data;
       } else {
         throw error;
@@ -411,4 +436,60 @@ export const appendToAttendanceSheet = async (entry: any) => {
 
   XLSX.writeFile(workbook, filePath);
   console.log(`✅ Attendance saved for ${entry.Name} (${entry.Source})`);
+};
+
+export const getLastFetchedTime = (): moment.Moment => {
+  try {
+    if (fs.existsSync(zktecoFilePath)) {
+      const data = fs.readFileSync(zktecoFilePath, "utf-8");
+      const parsed = JSON.parse(data);
+      return moment(parsed.lastFetchedTime);
+    }
+  } catch (err) {
+    console.error("❌ Failed to read last fetched time:", err);
+  }
+
+  // Default: 2 minutes ago
+  return moment().subtract(2, "minutes");
+};
+
+export const setLastFetchedTime = (time: moment.Moment) => {
+  try {
+    const data = { lastFetchedTime: time.toISOString() };
+    fs.writeFileSync(zktecoFilePath, JSON.stringify(data), "utf-8");
+  } catch (err) {
+    console.error("❌ Failed to save last fetched time:", err);
+  }
+};
+
+export const loadPunchCache = () => {
+  try {
+    if (fs.existsSync(processedPunchesFilePath)) {
+      const data = JSON.parse(
+        fs.readFileSync(processedPunchesFilePath, "utf-8")
+      );
+      punchSet = new Set(data);
+    }
+  } catch (err) {
+    console.error("⚠️ Failed to load punch cache:", err);
+  }
+};
+
+export const isDuplicate = (key: string): boolean => {
+  return punchSet.has(key);
+};
+
+export const markAsProcessed = (key: string) => {
+  punchSet.add(key);
+};
+
+export const savePunchCache = () => {
+  try {
+    fs.writeFileSync(
+      processedPunchesFilePath,
+      JSON.stringify(Array.from(punchSet))
+    );
+  } catch (err) {
+    console.error("⚠️ Failed to save punch cache:", err);
+  }
 };
