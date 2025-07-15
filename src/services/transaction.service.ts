@@ -1,6 +1,6 @@
 import { sendMessage } from "@src/utils/sendMessage";
 import axios from "axios";
-import moment from "moment";
+import moment from "moment-timezone";
 import dotenv from "dotenv";
 import fs, { stat } from "fs";
 import path from "path";
@@ -31,26 +31,54 @@ export class TransactionService {
   }
 
   public fetchTransactions = async (): Promise<any> => {
-    console.log("here");
-
     const deviceUrl = process.env.DEVICE_URL as string;
     let jwtToken = process.env.JWT_TOKEN as string;
 
     await loadPunchCache();
-
     const lastFetchedTime = await getLastFetchedTime();
-    console.log("last fetched Time", lastFetchedTime);
-
     const endTime = moment();
     const startTime = lastFetchedTime.clone().subtract(10, "seconds");
 
     const formattedStart = startTime.format("YYYY-MM-DD HH:mm:ss");
     const formattedEnd = endTime.format("YYYY-MM-DD HH:mm:ss");
-    console.log(`StartTime:: ${formattedStart} endTime:: ${formattedEnd}`);
 
     const url = `${deviceUrl}iclock/api/transactions/?start_time=${encodeURIComponent(
       formattedStart
     )}&end_time=${encodeURIComponent(formattedEnd)}&page_size=1000`;
+
+    const processPunches = async (punches: any[]) => {
+      for (const punch of punches) {
+        const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
+        if (isDuplicate(uniqueKey)) continue;
+        markAsProcessed(uniqueKey);
+
+        const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
+        const formattedDate = punchMoment.format("MMMM DD, YYYY");
+        const formattedTime = punchMoment.format("hh:mm A");
+        const fullName = punch.last_name
+          ? `${punch.first_name} ${punch.last_name}`
+          : punch.first_name;
+        const userId = String(punch.emp_code);
+        const status = punch.punch_state_display?.toLowerCase();
+
+        const entry = {
+          Name: fullName,
+          UserID: userId,
+          Date: formattedDate,
+          Status: status,
+          Time: formattedTime,
+          Source: "Zkteco", // or "Clockify"
+          Project: "",
+        };
+
+        await upsertToAttendanceSheet(entry);
+        await sendMessage(
+          `${fullName} (${userId})`,
+          punch.punch_time,
+          punch.punch_state_display
+        );
+      }
+    };
 
     try {
       const response = await axios.get(url, {
@@ -62,49 +90,18 @@ export class TransactionService {
 
       const punches = response.data?.data;
       if (Array.isArray(punches) && punches.length > 0) {
-        for (const punch of punches) {
-          const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
-          if (isDuplicate(uniqueKey)) continue;
-          markAsProcessed(uniqueKey);
-
-          const fullName = punch.last_name
-            ? `${punch.first_name} ${punch.last_name}`
-            : punch.first_name;
-
-          await sendMessage(
-            `${fullName} (${punch.emp_code})`,
-            punch.punch_time,
-            punch.punch_state_display
-          );
-          const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
-          const formattedDate = punchMoment.format("MMMM DD, YYYY");
-          const formattedTime = punchMoment.format("hh:mm A");
-          appendToAttendanceSheet({
-            Name: fullName,
-            UserID: String(punch.emp_code),
-            Date: formattedDate,
-            Time: formattedTime,
-            Status: punch.punch_state_display,
-            Total_Hour: "",
-            Source: "Zkteco",
-            Project: "",
-          });
-        }
+        await processPunches(punches);
       } else {
         console.log("⚠️ No punches found in response.");
       }
 
       setLastFetchedTime(endTime);
       savePunchCache();
-
       return response.data;
     } catch (error: any) {
       const status = error?.response?.status;
-
-      // Token is invalid or expired
       if (status === 401 || error?.response?.data?.code === "token_not_valid") {
-        console.warn("🔒 Token expired or invalid. Fetching new token...");
-
+        console.warn("🔒 Token expired. Fetching new token...");
         const newToken = await this.getJWTToken({
           userName: process.env.DEVICE_USERNAME as string,
           Password: process.env.DEVICE_PASSWORD as string,
@@ -113,7 +110,6 @@ export class TransactionService {
         process.env.JWT_TOKEN = newToken;
         jwtToken = newToken;
 
-        // Retry the request with new token
         const retryResponse = await axios.get(url, {
           headers: {
             "Content-Type": "application/json",
@@ -123,34 +119,7 @@ export class TransactionService {
 
         const punches = retryResponse.data?.data;
         if (Array.isArray(punches) && punches.length > 0) {
-          for (const punch of punches) {
-            const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
-            if (isDuplicate(uniqueKey)) continue;
-            markAsProcessed(uniqueKey);
-
-            const fullName = punch.last_name
-              ? `${punch.first_name} ${punch.last_name}`
-              : punch.first_name;
-
-            await sendMessage(
-              `${fullName} (${punch.emp_code})`,
-              punch.punch_time,
-              punch.punch_state_display
-            );
-            const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
-            const formattedDate = punchMoment.format("MMMM DD, YYYY");
-            const formattedTime = punchMoment.format("hh:mm A");
-            appendToAttendanceSheet({
-              Name: fullName,
-              UserID: String(punch.emp_code),
-              Date: formattedDate, // e.g., "2025 || July | Wednesday"
-              Time: formattedTime, // e.g., "09:22 AM"
-              Status: punch.punch_state_display,
-              Total_Hour: "",
-              Source: "Zkteco",
-              Project: "",
-            });
-          }
+          await processPunches(punches);
         } else {
           console.log("⚠️ No punches found in retry response.");
         }
@@ -214,22 +183,34 @@ export class TransactionService {
               project,
               true
             );
-            const punchMoment = moment(
-              runningEntry?.timeInterval?.start,
-              "YYYY-MM-DD HH:mm:ss"
-            );
+            const punchMoment = moment
+              .utc(runningEntry.timeInterval.start)
+              .tz("Asia/Karachi");
+
             const formattedDate = punchMoment.format("MMMM DD, YYYY");
             const formattedTime = punchMoment.format("hh:mm A");
-            appendToAttendanceSheet({
+            //--------------------------------
+            // appendToAttendanceSheet({
+            //   Name: user.name,
+            //   UserID: "",
+            //   Date: formattedDate,
+            //   Time: formattedTime,
+            //   Status: "Signing In",
+            //   Total_Hour: "",
+            //   Source: "Clockify",
+            //   Project: project,
+            // });
+            const entry = {
               Name: user.name,
               UserID: "",
               Date: formattedDate,
-              Time: formattedTime,
               Status: "Signing In",
-              Total_Hour: "",
-              Source: "Clockify",
+              Time: formattedTime,
+              Source: "Clockify", // or "Clockify"
               Project: project,
-            });
+            };
+
+            await upsertToAttendanceSheet(entry);
           }
         } else {
           if (lastTimerId) {
@@ -263,16 +244,27 @@ export class TransactionService {
               );
               const formattedDate = punchMoment.format("MMMM DD, YYYY");
               const formattedTime = punchMoment.format("hh:mm A");
-              appendToAttendanceSheet({
+              //--------------------------------
+              // appendToAttendanceSheet({
+              //   Name: user.name,
+              //   UserID: "",
+              //   Date: formattedDate,
+              //   Time: formattedTime,
+              //   Status: "Signing off",
+              //   Total_Hour: worked,
+              //   Source: "Clockify",
+              //   Project: project,
+              // });
+              const entry = {
                 Name: user.name,
                 UserID: "",
                 Date: formattedDate,
-                Time: formattedTime,
                 Status: "Signing off",
-                Total_Hour: worked,
-                Source: "Clockify",
+                Time: formattedTime,
+                Source: "Clockify", // or "Clockify"
                 Project: project,
-              });
+              };
+              await upsertToAttendanceSheet(entry);
             } else {
               console.warn(
                 `⚠️ Last time entry not found or mismatched for ${user.name}`
@@ -387,15 +379,30 @@ function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-export const appendToAttendanceSheet = async (entry: any) => {
+export const upsertToAttendanceSheet = async (entry: any) => {
   let workbook, worksheet;
-
+  const status = entry.Status?.toLowerCase() || "";
+  const formattedTime = entry.Time || "";
   const headers = [
     "Name",
     "UserID",
     "Date",
-    "Time",
-    "Status",
+    "checkIn",
+    "checkOut",
+    "breakIn",
+    "breakOut",
+    "breakIn2",
+    "breakOut2",
+    "breakIn3",
+    "breakOut3",
+    "WFH Start 1",
+    "WFH End 1",
+    "WFH Start 2",
+    "WFH End 2",
+    "WFH Start 3",
+    "WFH End 3",
+    "WFH Start 4",
+    "WFH End 4",
     "Total_Hour",
     "Source",
     "Project",
@@ -414,28 +421,106 @@ export const appendToAttendanceSheet = async (entry: any) => {
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
   }
 
-  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[];
+  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+  const existingRows = data.slice(1); // skip headers
 
-  const newRow = [
-    entry.Name,
-    entry.UserID,
-    entry.Date,
-    entry.Time,
-    entry.Status,
-    entry.Total_Hour || "",
-    entry.Source,
-    entry.Project || "",
-  ];
+  const rowIndex = existingRows.findIndex((row) => {
+    const matchByUserId =
+      entry.UserID && row[1] === entry.UserID && row[2] === entry.Date;
+    const matchByName =
+      !entry.UserID && row[0] === entry.Name && row[2] === entry.Date;
+    return matchByUserId || matchByName;
+  });
 
-  data.push(newRow);
+  const newRow = new Array(headers.length).fill("");
+  newRow[0] = entry.Name;
+  newRow[1] = entry.UserID;
+  newRow[2] = entry.Date;
+  newRow[headers.indexOf("Source")] = entry.Source;
+  newRow[headers.indexOf("Project")] = entry.Project || "";
+
+  const isWFH = entry.Source === "Clockify";
+
+  const assignTime = (row: string[]) => {
+    if (isWFH) {
+      // WFH: Fill WFH Start/End pairs in order
+      const wfhPairs = [
+        ["WFH Start 1", "WFH End 1"],
+        ["WFH Start 2", "WFH End 2"],
+        ["WFH Start 3", "WFH End 3"],
+        ["WFH Start 4", "WFH End 4"],
+      ];
+      const isStart = status.toLowerCase().includes("signing in");
+      const isEnd = status.toLowerCase().includes("signing off");
+
+      for (const [startKey, endKey] of wfhPairs) {
+        const startIdx = headers.indexOf(startKey);
+        const endIdx = headers.indexOf(endKey);
+
+        if (isStart && !row[startIdx]) {
+          row[startIdx] = formattedTime;
+          break;
+        }
+        if (isEnd && !row[endIdx]) {
+          row[endIdx] = formattedTime;
+          break;
+        }
+      }
+    } else {
+      // Office logic
+      const checkInIdx = headers.indexOf("checkIn");
+      const checkOutIdx = headers.indexOf("checkOut");
+      const breakIns = [
+        headers.indexOf("breakIn"),
+        headers.indexOf("breakIn2"),
+        headers.indexOf("breakIn3"),
+      ];
+      const breakOuts = [
+        headers.indexOf("breakOut"),
+        headers.indexOf("breakOut2"),
+        headers.indexOf("breakOut3"),
+      ];
+
+      const lowerStatus = status.toLowerCase();
+
+      if (lowerStatus.includes("check in")) {
+        if (!row[checkInIdx]) row[checkInIdx] = formattedTime;
+      } else if (lowerStatus.includes("check out")) {
+        if (!row[checkOutIdx]) row[checkOutIdx] = formattedTime;
+      } else if (lowerStatus.includes("break start")) {
+        for (const idx of breakIns) {
+          if (!row[idx]) {
+            row[idx] = formattedTime;
+            break;
+          }
+        }
+      } else if (lowerStatus.includes("break end")) {
+        for (const idx of breakOuts) {
+          if (!row[idx]) {
+            row[idx] = formattedTime;
+            break;
+          }
+        }
+      }
+    }
+  };
+
+  if (rowIndex !== -1) {
+    const row = data[rowIndex + 1]; // account for header
+    // Update project (for WFH or anyone)
+    row[headers.indexOf("Project")] =
+      entry.Project || row[headers.indexOf("Project")];
+    assignTime(row);
+    data[rowIndex + 1] = row;
+  } else {
+    assignTime(newRow);
+    data.push(newRow);
+  }
 
   const updatedSheet = XLSX.utils.aoa_to_sheet(data);
-
-  // 👇 Only replace the sheet content, don't re-append it
   workbook.Sheets[sheetName] = updatedSheet;
-
   XLSX.writeFile(workbook, filePath);
-  console.log(`✅ Attendance saved for ${entry.Name} (${entry.Source})`);
+  console.log(`✅ Attendance upserted for ${entry.Name} (${entry.Source})`);
 };
 
 export const getLastFetchedTime = (): moment.Moment => {
