@@ -279,7 +279,545 @@ export class TransactionService {
       console.error("❌ Error in getClockify:", err.message || err);
     }
   };
+
+  public getAllUsersAttendance = async (data: any) => {
+    const { start, end } = data;
+    const users = await getUsers();
+    const attendanceRows: any[] = [];
+
+    for (const user of users) {
+      const res = await clockify.get(
+        `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
+        {
+          params: { start, end },
+        }
+      );
+
+      const entries = res.data;
+      if (!entries.length) continue;
+
+      const groupedByDate: Record<string, any[]> = {};
+
+      entries.forEach((entry: any) => {
+        const date = entry.timeInterval.start.split("T")[0];
+        if (!groupedByDate[date]) groupedByDate[date] = [];
+        groupedByDate[date].push(entry);
+      });
+
+      for (const date in groupedByDate) {
+        const dayEntries = groupedByDate[date];
+
+        const startTimes = dayEntries.map(
+          (e) => new Date(e.timeInterval.start)
+        );
+        const endTimes = dayEntries.map((e) => new Date(e.timeInterval.end));
+
+        const earliestStart = new Date(
+          Math.min(...startTimes.map((d) => d.getTime()))
+        );
+        const latestEnd = new Date(
+          Math.max(...endTimes.map((d) => d.getTime()))
+        );
+
+        const totalDurationMs = endTimes.reduce((sum, end, i) => {
+          return sum + (end.getTime() - startTimes[i].getTime());
+        }, 0);
+
+        const durationHrs = Math.floor(totalDurationMs / (1000 * 60 * 60));
+        const durationMin = Math.floor((totalDurationMs / (1000 * 60)) % 60);
+
+        attendanceRows.push({
+          Name: user.name,
+          Email: user.email,
+          Date: date,
+          "Check In": earliestStart.toLocaleTimeString(),
+          "Check Out": latestEnd.toLocaleTimeString(),
+          "Worked Hours": `${durationHrs}h ${durationMin}m`,
+        });
+      }
+    }
+
+    // Export to Excel
+    const worksheet = XLSX.utils.json_to_sheet(attendanceRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Attendance");
+
+    const filePath = path.join(__dirname, "attendance-report.xlsx");
+    XLSX.writeFile(workbook, filePath);
+
+    console.log("✅ Attendance report saved to:", filePath);
+  };
+
+  public exportAttendanceReport = async () => {
+    const deviceUrl = process.env.DEVICE_URL as string;
+    const jwtToken = process.env.JWT_TOKEN as string;
+
+    const start_date = "2025-07-14";
+    const end_date = "2025-07-20";
+
+    let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+      start_date
+    )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
+
+    let allRecords: any[] = [];
+
+    // Fetch all pages
+    while (url) {
+      console.log("📡 Fetching:", url);
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `JWT ${jwtToken}`,
+          Accept: "application/json",
+        },
+      });
+
+      const response = res.data?.response || res.data;
+      if (!response?.data || !Array.isArray(response.data)) {
+        console.error("❌ Invalid response structure or missing data.");
+        break;
+      }
+
+      allRecords = allRecords.concat(response.data);
+      url = response.next || null;
+    }
+
+    if (allRecords.length === 0) {
+      console.log("⚠️ No attendance records found.");
+      return;
+    }
+
+    // Group by emp_code + att_date
+    const grouped: { [key: string]: any[] } = {};
+    for (const record of allRecords) {
+      const key = `${record.emp_code}_${record.att_date}`;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(record);
+    }
+
+    const finalRows: any[] = [];
+
+    for (const [key, records] of Object.entries(grouped)) {
+      // Sort by punch_time
+      records.sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+
+      const base = records[0];
+      const times = records.map((r) => ({
+        time: r.punch_time,
+        state: r.punch_state,
+      }));
+
+      const row: any = {
+        "Employee Code": base.emp_code,
+        Name: `${base.first_name ?? ""} ${base.last_name ?? ""}`.trim(),
+        Department: base.dept_name,
+        Company: base.company_name,
+        Date: base.att_date,
+        "Check In": "",
+        "Check Out": "",
+        "Break 1 Start": "",
+        "Break 1 End": "",
+        "Break 2 Start": "",
+        "Break 2 End": "",
+        "Break 3 Start": "",
+        "Break 3 End": "",
+        "Break 4 Start": "",
+        "Break 4 End": "",
+        "Total Break Time": "",
+        "Total Work Time": "",
+      };
+
+      const punches = times.map((t) => t.time);
+
+      // Assume: first = Check In, last = Check Out
+      row["Check In"] = punches[0];
+      row["Check Out"] = punches[punches.length - 1];
+
+      const breaks = punches.slice(1, punches.length - 1); // exclude CheckIn and CheckOut
+
+      for (let i = 0; i < breaks.length && i < 8; i += 2) {
+        const breakNum = Math.floor(i / 2) + 1;
+        row[`Break ${breakNum} Start`] = breaks[i];
+        row[`Break ${breakNum} End`] = breaks[i + 1] ?? "";
+      }
+
+      // Time calculations
+      const toMinutes = (time: string) => {
+        const [h, m] = time.split(":").map(Number);
+        return h * 60 + m;
+      };
+
+      const toHHMM = (min: number) =>
+        `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
+          min % 60
+        ).padStart(2, "0")}`;
+
+      const checkInMin = toMinutes(row["Check In"]);
+      const checkOutMin = toMinutes(row["Check Out"]);
+
+      let breakMin = 0;
+      for (let i = 1; i <= 4; i++) {
+        const bStart = row[`Break ${i} Start`];
+        const bEnd = row[`Break ${i} End`];
+        if (bStart && bEnd) {
+          breakMin += toMinutes(bEnd) - toMinutes(bStart);
+        }
+      }
+
+      const totalWorked = checkOutMin - checkInMin - breakMin;
+      row["Total Break Time"] = toHHMM(breakMin);
+      row["Total Work Time"] = toHHMM(totalWorked);
+
+      finalRows.push(row);
+    }
+
+    // Export to XLSX
+    const worksheet = XLSX.utils.json_to_sheet(finalRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Formatted Attendance");
+
+    const fileName = `attendance-${start_date}_to_${end_date}.xlsx`;
+    const filePath = path.join(process.cwd(), fileName);
+    XLSX.writeFile(workbook, filePath);
+
+    console.log(`✅ Formatted XLSX saved to: ${filePath}`);
+  };
+
+  public exportMergedAttendanceReport = async (data: any) => {
+    const { start, end } = data;
+    const startDate = new Date(start).toISOString().split("T")[0];
+    const endDate = new Date(end).toISOString().split("T")[0];
+
+    const deviceUrl = process.env.DEVICE_URL as string;
+    const jwtToken = process.env.JWT_TOKEN as string;
+
+    let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+      startDate
+    )}&end_date=${encodeURIComponent(endDate)}&page_size=500`;
+
+    let allRecords: any[] = [];
+
+    // 🔁 Fetch Biotime Data
+    while (url) {
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `JWT ${jwtToken}`,
+          Accept: "application/json",
+        },
+      });
+
+      const response = res.data?.response || res.data;
+      if (!response?.data || !Array.isArray(response.data)) break;
+
+      allRecords = allRecords.concat(response.data);
+      url = response.next || null;
+    }
+
+    if (!allRecords.length) {
+      console.log("⚠️ No Biotime attendance records found.");
+      return;
+    }
+
+    // 📦 Group by emp_code + date
+    const grouped: { [key: string]: any[] } = {};
+    for (const record of allRecords) {
+      const key = `${record.emp_code}_${record.att_date}`;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(record);
+    }
+
+    const finalRows: any[] = [];
+
+    for (const [key, records] of Object.entries(grouped)) {
+      records.sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+      const base = records[0];
+      const times = records.map((r) => r.punch_time);
+
+      const row: any = {
+        "Employee Code": base.emp_code,
+        Name: `${base.first_name ?? ""} ${base.last_name ?? ""}`.trim(),
+        Date: base.att_date,
+        "Check In": times[0],
+        "Check Out": times[times.length - 1],
+        "Break 1 Start": "",
+        "Break 1 End": "",
+        "Break 2 Start": "",
+        "Break 2 End": "",
+        "Break 3 Start": "",
+        "Break 3 End": "",
+        "Break 4 Start": "",
+        "Break 4 End": "",
+        "Total Break Time": "",
+        "Office Work Time": "",
+        "Clockify Check In": "",
+        "Clockify Check Out": "",
+        "Clockify Worked Hours": "",
+        "Total Work Time": "",
+      };
+
+      const breaks = times.slice(1, times.length - 1);
+      for (let i = 0; i < breaks.length && i < 8; i += 2) {
+        const bNum = Math.floor(i / 2) + 1;
+        row[`Break ${bNum} Start`] = breaks[i];
+        row[`Break ${bNum} End`] = breaks[i + 1] ?? "";
+      }
+
+      const toMinutes = (t: string) => {
+        const [h, m, s] = t.split(":").map(Number);
+        return h * 60 + m;
+      };
+      const toHHMM = (min: number) =>
+        `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
+          min % 60
+        ).padStart(2, "0")}`;
+
+      const checkInMin = toMinutes(row["Check In"]);
+      const checkOutMin = toMinutes(row["Check Out"]);
+
+      let breakMin = 0;
+      for (let i = 1; i <= 4; i++) {
+        const bStart = row[`Break ${i} Start`];
+        const bEnd = row[`Break ${i} End`];
+        if (bStart && bEnd) {
+          breakMin += toMinutes(bEnd) - toMinutes(bStart);
+        }
+      }
+
+      const officeWorkedMin = checkOutMin - checkInMin - breakMin;
+      row["Total Break Time"] = toHHMM(breakMin);
+      row["Office Work Time"] = toHHMM(officeWorkedMin);
+      row["OfficeWorkMinutes"] = officeWorkedMin;
+
+      finalRows.push(row);
+    }
+
+    // 🔁 FETCH CLOCKIFY
+    const users = await getUsers();
+    const clockifyMap = new Map<string, any>();
+    const unmatchedClockifyRows: any[] = [];
+
+    for (const user of users) {
+      const res = await clockify.get(
+        `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
+        { params: { start, end } }
+      );
+
+      const entries = res.data;
+      if (!entries.length) continue;
+
+      const groupedByDate: Record<string, any[]> = {};
+      entries.forEach((entry: any) => {
+        const date = entry.timeInterval.start.split("T")[0];
+        if (!groupedByDate[date]) groupedByDate[date] = [];
+        groupedByDate[date].push(entry);
+      });
+
+      for (const date in groupedByDate) {
+        const dayEntries = groupedByDate[date];
+        const startTimes = dayEntries.map(
+          (e) => new Date(e.timeInterval.start)
+        );
+        const endTimes = dayEntries.map((e) => new Date(e.timeInterval.end));
+
+        const checkIn = new Date(
+          Math.min(...startTimes.map((d) => d.getTime()))
+        );
+        const checkOut = new Date(
+          Math.max(...endTimes.map((d) => d.getTime()))
+        );
+
+        // ✅ CORRECT: Total span between check-in and check-out
+        const durationMs = checkOut.getTime() - checkIn.getTime();
+
+        const h = Math.floor(durationMs / (1000 * 60 * 60));
+        const m = Math.floor((durationMs / (1000 * 60)) % 60);
+
+        const name = user.name.trim().toLowerCase();
+        const key = `${name}_${date}`;
+
+        clockifyMap.set(key, {
+          checkIn: checkIn.toLocaleTimeString(),
+          checkOut: checkOut.toLocaleTimeString(),
+          worked: `${h}h ${m}m`,
+          ClockifyMinutes: Math.floor(durationMs / (1000 * 60)), // for total work time
+        });
+      }
+    }
+
+    // 🔗 Merge Clockify
+    for (const row of finalRows) {
+      const key = `${row.Name?.trim().toLowerCase()}_${row.Date}`;
+      const clockify = clockifyMap.get(key);
+
+      let officeMin = row.OfficeWorkMinutes || 0;
+      let clockifyMin = 0;
+
+      if (clockify) {
+        row["Clockify Check In"] = clockify.checkIn;
+        row["Clockify Check Out"] = clockify.checkOut;
+        row["Clockify Worked Hours"] = clockify.worked;
+        clockifyMin = clockify.ClockifyMinutes;
+      }
+
+      const totalMin = officeMin + clockifyMin;
+      row["Total Work Time"] = `${String(Math.floor(totalMin / 60)).padStart(
+        2,
+        "0"
+      )}:${String(totalMin % 60).padStart(2, "0")}`;
+    }
+
+    // ➕ Add unmatched Clockify entries
+    for (const [key, cData] of clockifyMap.entries()) {
+      const [name, date] = key.split("_");
+      const alreadyExists = finalRows.find(
+        (r) => r.Name?.trim().toLowerCase() === name && r.Date === date
+      );
+
+      if (!alreadyExists) {
+        const totalMin = cData.ClockifyMinutes;
+
+        finalRows.push({
+          "Employee Code": "",
+          Name: name,
+          Date: date,
+          "Check In": "",
+          "Check Out": "",
+          "Break 1 Start": "",
+          "Break 1 End": "",
+          "Break 2 Start": "",
+          "Break 2 End": "",
+          "Break 3 Start": "",
+          "Break 3 End": "",
+          "Break 4 Start": "",
+          "Break 4 End": "",
+          "Total Break Time": "",
+          "Office Work Time": "",
+          "Clockify Check In": cData.checkIn,
+          "Clockify Check Out": cData.checkOut,
+          "Clockify Worked Hours": cData.worked,
+          "Total Work Time": `${String(Math.floor(totalMin / 60)).padStart(
+            2,
+            "0"
+          )}:${String(totalMin % 60).padStart(2, "0")}`,
+        });
+      }
+    }
+
+    // Export
+    const cleanRows = finalRows.map(({ OfficeWorkMinutes, ...rest }) => rest);
+    const worksheet = XLSX.utils.json_to_sheet(cleanRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Merged Attendance");
+
+    // const fileName = `attendance-merged-${startDate}_to_${endDate}.xlsx`;
+    // const filePath = path.join(process.cwd(), fileName);
+    // XLSX.writeFile(workbook, filePath);
+
+    // ➕ Weekly & Monthly Summary Sheets
+    const groupBy = (rows: any[], granularity: "week" | "month") => {
+      const map: Record<string, any> = {};
+
+      for (const row of rows) {
+        const date = moment(row.Date, "YYYY-MM-DD");
+
+        const key =
+          granularity === "week"
+            ? `week-${moment(date)
+                .startOf("week")
+                .format("YYYY-MM-DD")}-to-${moment(date)
+                .endOf("week")
+                .format("YYYY-MM-DD")}`
+            : `month-${moment(date).format("YYYY-MM")}`;
+
+        if (!map[key]) map[key] = {};
+        const userKey = row.Name?.trim().toLowerCase();
+
+        if (!map[key][userKey]) {
+          map[key][userKey] = {
+            Name: row.Name?.trim(),
+            "Total Office Work Minutes": 0,
+            "Total Break Minutes": 0,
+            "Total Clockify Minutes": 0,
+            "Total Work Minutes": 0,
+          };
+        }
+
+        const user = map[key][userKey];
+
+        const toMinutes = (str: string) => {
+          if (!str || typeof str !== "string") return 0;
+          const match = str.match(/^(\d{1,2})h\s?(\d{1,2})?m?$/i); // "8h 30m"
+          if (match) {
+            const h = parseInt(match[1] || "0", 10);
+            const m = parseInt(match[2] || "0", 10);
+            return h * 60 + m;
+          }
+
+          const [h, m] = str.split(":").map(Number); // "08:30"
+          if (isNaN(h) || isNaN(m)) return 0;
+          return h * 60 + m;
+        };
+
+        user["Total Office Work Minutes"] += toMinutes(row["Office Work Time"]);
+        user["Total Break Minutes"] += toMinutes(row["Total Break Time"]);
+        user["Total Clockify Minutes"] += toMinutes(
+          row["Clockify Worked Hours"]
+        );
+        user["Total Work Minutes"] += toMinutes(row["Total Work Time"]);
+      }
+
+      return map;
+    };
+
+    const weekly = groupBy(cleanRows, "week");
+    const monthly = groupBy(cleanRows, "month");
+
+    const formatSummary = (group: Record<string, any>) =>
+      Object.entries(group).map(([sheetName, users]) => {
+        const rows = Object.values(users).map((user: any) => {
+          const toHHMM = (min: number) =>
+            `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
+              min % 60
+            ).padStart(2, "0")}`;
+
+          return {
+            Name: user.Name,
+            "Total Office Work Time": toHHMM(user["Total Office Work Minutes"]),
+            "Total Break Time": toHHMM(user["Total Break Minutes"]),
+            "Total Clockify Time": toHHMM(user["Total Clockify Minutes"]),
+            "Total Work Time": toHHMM(user["Total Work Minutes"]),
+          };
+        });
+
+        return { sheetName, rows };
+      });
+
+    // ➕ Append sheets to Excel
+    [...formatSummary(weekly), ...formatSummary(monthly)].forEach(
+      ({ sheetName, rows }) => {
+        const sheet = XLSX.utils.json_to_sheet(rows);
+        XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+      }
+    );
+
+    const fileName = `attendance-merged-${startDate}_to_${endDate}.xlsx`;
+    const filePath = path.join(process.cwd(), fileName);
+    XLSX.writeFile(workbook, filePath);
+
+    console.log(`✅ Final merged XLSX saved to: ${filePath}`);
+  };
 }
+
+const toMinutes = (t: string) => {
+  if (!t || typeof t !== "string") return 0;
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+};
+
+const toHHMM = (min: number) =>
+  `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(
+    2,
+    "0"
+  )}`;
 
 export const getUsers = async () => {
   // const res = await clockify.get(`/workspaces/${WORKSPACE_ID}/users`);

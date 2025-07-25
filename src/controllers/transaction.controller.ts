@@ -65,4 +65,54 @@ export class TransactionController {
       });
     }
   };
+
+  public getAllUsersAttendance = async (req: Request, res: Response) => {
+    try {
+      const { query } = req;
+      const response: any = await this.__service.getAllUsersAttendance(query);
+      res.status(200).json({
+        statusCode: 200,
+        message: "Data fetched successfully.",
+        response,
+      });
+    } catch (error: any) {
+      res.status(403).send({
+        statusCode: 403,
+        message: error.message,
+      });
+    }
+  };
+
+  public exportAttendanceReport = async (req: Request, res: Response) => {
+    try {
+      const response: any = await this.__service.exportAttendanceReport();
+      res.status(200).json({
+        statusCode: 200,
+        message: "Data fetched successfully.",
+        response,
+      });
+    } catch (error: any) {
+      res.status(403).send({
+        statusCode: 403,
+        message: error.message,
+      });
+    }
+  };
+
+  public exportMergedAttendanceReport = async (req: Request, res: Response) => {
+    try {
+      const {query} = req;
+      const response: any = await this.__service.exportMergedAttendanceReport(query);
+      res.status(200).json({
+        statusCode: 200,
+        message: "Data fetched successfully.",
+        response,
+      });
+    } catch (error: any) {
+      res.status(403).send({
+        statusCode: 403,
+        message: error.message,
+      });
+    }
+  };
 }
