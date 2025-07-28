@@ -1,5 +1,6 @@
 import { TransactionService } from "@src/services/transaction.service";
 import { Request, Response } from "express";
+import * as XLSX from "xlsx";
 
 export class TransactionController {
   /**
@@ -101,14 +102,32 @@ export class TransactionController {
 
   public exportMergedAttendanceReport = async (req: Request, res: Response) => {
     try {
-      const {query} = req;
-      const response: any = await this.__service.exportMergedAttendanceReport(query);
-      res.status(200).json({
-        statusCode: 200,
-        message: "Data fetched successfully.",
-        response,
+      const { query } = req;
+      const { workbook, fileName }: any =
+        await this.__service.exportMergedAttendanceReport(query);
+
+      const buffer = XLSX.write(workbook, {
+        bookType: "xlsx",
+        type: "buffer",
       });
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fileName}"`
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.send(buffer);
+
+      // res.status(200).json({
+      //   statusCode: 200,
+      //   message: "Data fetched successfully.",
+      // });
     } catch (error: any) {
+      console.log(error);
+
       res.status(403).send({
         statusCode: 403,
         message: error.message,
