@@ -721,18 +721,32 @@ export class TransactionService {
       // ➕ Weekly & Monthly Summary Sheets
       const groupBy = (rows: any[], granularity: "week" | "month") => {
         const map: Record<string, any> = {};
+        const givenStart = moment(start, "YYYY-MM-DD").startOf("day"); // the user-provided start
+
+        // First week end: if start is Monday this becomes Sunday of that week; if start is any other day it becomes the upcoming Sunday.
+        const firstWeekEnd = givenStart.clone().endOf("isoWeek"); // ISO week: Monday–Sunday
 
         for (const row of rows) {
-          const date = moment(row.Date, "YYYY-MM-DD");
+          const date = moment(row.Date, "YYYY-MM-DD").startOf("day");
 
-          const key =
-            granularity === "week"
-              ? `week-${moment(date)
-                  .startOf("week")
-                  .format("YYYY-MM-DD")}-to-${moment(date)
-                  .endOf("week")
-                  .format("YYYY-MM-DD")}`
-              : `month-${moment(date).format("YYYY-MM")}`;
+          let key: string;
+          if (granularity === "week") {
+            if (date.isBetween(givenStart, firstWeekEnd, "day", "[]")) {
+              // falls in the initial partial/full week from givenStart to the first Sunday
+              key = `week-${givenStart.format(
+                "YYYY-MM-DD"
+              )}-to-${firstWeekEnd.format("YYYY-MM-DD")}`;
+            } else {
+              // subsequent regular ISO weeks (Monday to Sunday)
+              const weekStart = date.clone().startOf("isoWeek");
+              const weekEnd = date.clone().endOf("isoWeek");
+              key = `week-${weekStart.format("YYYY-MM-DD")}-to-${weekEnd.format(
+                "YYYY-MM-DD"
+              )}`;
+            }
+          } else {
+            key = `month-${moment(date).format("YYYY-MM")}`;
+          }
 
           if (!map[key]) map[key] = {};
           const userKey = row.Name?.trim().toLowerCase();
@@ -751,14 +765,13 @@ export class TransactionService {
 
           const toMinutes = (str: string) => {
             if (!str || typeof str !== "string") return 0;
-            const match = str.match(/^(\d{1,2})h\s?(\d{1,2})?m?$/i); // "8h 30m"
+            const match = str.match(/^(\d{1,2})h\s?(\d{1,2})?m?$/i);
             if (match) {
               const h = parseInt(match[1] || "0", 10);
               const m = parseInt(match[2] || "0", 10);
               return h * 60 + m;
             }
-
-            const [h, m] = str.split(":").map(Number); // "08:30"
+            const [h, m] = str.split(":").map(Number);
             if (isNaN(h) || isNaN(m)) return 0;
             return h * 60 + m;
           };
