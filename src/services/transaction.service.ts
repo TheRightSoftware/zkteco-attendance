@@ -162,6 +162,7 @@ export class TransactionService {
   public getClockify = async (): Promise<void> => {
     try {
       const users: any = await getUsers();
+
       console.log("length is ", users.length);
       const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
       for (const user of users) {
@@ -488,6 +489,8 @@ export class TransactionService {
 
   public exportMergedAttendanceReport = async (data: any) => {
     const { start, end } = data;
+    console.log("🔴 start:", start);
+    
 
     try {
       const startDate = new Date(start).toISOString().split("T")[0];
@@ -637,7 +640,7 @@ export class TransactionService {
           const h = Math.floor(durationMs / (1000 * 60 * 60));
           const m = Math.floor((durationMs / (1000 * 60)) % 60);
 
-          const name = user.name.trim().toLowerCase();
+          const name = user.name.trim();
           const key = `${name}_${date}`;
 
           clockifyMap.set(key, {
@@ -828,6 +831,8 @@ export class TransactionService {
       return { workbook, fileName };
       console.log(`✅ Final merged XLSX saved to: ${filePath}`);
     } catch (error: any) {
+      console.log("🔴 Error:", error);
+
       const status = error?.response?.status;
       if (status === 401 || error?.response?.data?.code === "token_not_valid") {
         console.warn("🔒 Token expired. Fetching new token...");
