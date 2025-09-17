@@ -23,41 +23,56 @@ export const sendMessage = async (
   punchTime: string,
   punchState: string,
   project?: string,
-  isFromClockify: boolean = false
+  isFromClockify: boolean = false,
+  maxRetries = 3,
+  delayMs = 1000
 ) => {
-  try {
-    const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
-    const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
-    const userId = process.env.ROCKET_CHAT_USER_ID as string;
+  const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
+  const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
+  const userId = process.env.ROCKET_CHAT_USER_ID as string;
 
-    const formattedTime = moment(punchTime).format("h:mm A");
-    const message = isFromClockify
-      ? `${firstName}${project ? ` | ${project}` : ""} | ${formattedTime} | ${punchState}`
-      : `${firstName} | ${formattedTime} | ${punchState}`;
+  const formattedTime = moment(punchTime).format("h:mm A");
+  const message = isFromClockify
+    ? `${firstName}${project ? ` | ${project}` : ""} | ${formattedTime} | ${punchState}`
+    : `${firstName} | ${formattedTime} | ${punchState}`;
 
-    logger.info(`💬 ${message} - ${punchTime}`);
+  let attempt = 0;
 
-    const res = await axios.post(
-      `${rocketChatServer}/api/v1/chat.postMessage`,
-      {
-        channel: process.env.CHANNEL_NAME as string,
-        text: message,
-      },
-      {
-        headers: {
-          "X-Auth-Token": authToken,
-          "X-User-Id": userId,
-          "Content-Type": "application/json",
+  while (attempt < maxRetries) {
+    try {
+      logger.info(`💬 Attempt ${attempt + 1}: ${message} - ${punchTime}`);
+
+      const res = await axios.post(
+        `${rocketChatServer}/api/v1/chat.postMessage`,
+        {
+          channel: process.env.CHANNEL_NAME as string,
+          text: message,
         },
-      }
-    );
+        {
+          headers: {
+            "X-Auth-Token": authToken,
+            "X-User-Id": userId,
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
-    logger.info(`✅ Sent for ${firstName}: ${formattedTime}`);
-    // return res.data;
-  } catch (error: any) {
-    logger.error(
-      `🚫 Failed to send message: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`
-    );
-    // throw error; 
+      logger.info(`✅ Sent for ${firstName}: ${formattedTime}`);
+      return; // success, exit the function
+
+    } catch (error: any) {
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      logger.error(`🚫 Attempt ${attempt + 1} failed: ${errorMsg}`);
+
+      attempt++;
+      if (attempt < maxRetries) {
+        const waitTime = delayMs * Math.pow(2, attempt); // Exponential backoff
+        logger.info(`⏳ Retrying in ${waitTime / 1000} seconds...`);
+        await new Promise(res => setTimeout(res, waitTime));
+      } else {
+        logger.error(`❌ All ${maxRetries} attempts failed.`);
+      }
+    }
   }
 };
+
