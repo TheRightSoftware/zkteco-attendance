@@ -357,8 +357,8 @@ export class TransactionService {
     const deviceUrl = process.env.DEVICE_URL as string;
     const jwtToken = process.env.JWT_TOKEN as string;
 
-    const start_date = "2025-07-14";
-    const end_date = "2025-07-20";
+    const start_date = "2025-10-01";
+    const end_date = "2025-10-14";
 
     let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
       start_date
@@ -490,7 +490,6 @@ export class TransactionService {
   public exportMergedAttendanceReport = async (data: any) => {
     const { start, end } = data;
     console.log("🔴 start:", start);
-    
 
     try {
       const startDate = new Date(start).toISOString().split("T")[0];
@@ -519,6 +518,10 @@ export class TransactionService {
 
         allRecords = allRecords.concat(response.data);
         url = response.next || null;
+        if (url) {
+          console.log("⏳ Waiting 20 seconds before next request...");
+          await this.delay(20000); // wait 20 seconds before the next API hit
+        }
       }
 
       if (!allRecords.length) {
@@ -848,6 +851,10 @@ export class TransactionService {
       }
     }
   };
+
+  public delay(ms: any) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 }
 
 const toMinutes = (t: string) => {
