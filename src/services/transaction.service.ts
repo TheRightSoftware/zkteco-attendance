@@ -108,6 +108,7 @@ export class TransactionService {
           userName: process.env.DEVICE_USERNAME as string,
           Password: process.env.DEVICE_PASSWORD as string,
         });
+        console.log("New token:", newToken);
 
         process.env.JWT_TOKEN = newToken;
         jwtToken = newToken;
@@ -360,11 +361,23 @@ export class TransactionService {
     const start_date = "2025-10-01";
     const end_date = "2025-10-14";
 
-    let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
-      start_date
-    )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
+    // let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+    //   start_date
+    // )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
+    let url =
+      "http://192.168.100.7/att/api/transactionReport/?end_date=2025-10-15&page=3&page_size=500&start_date=-10-01";
 
     let allRecords: any[] = [];
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `JWT ${jwtToken}`,
+        Accept: "application/json",
+      },
+    });
+    console.log("Response status:", res.status);
+    console.log("Response headers:", res.headers);
+    return JSON.stringify(res.data);
+
 
     // Fetch all pages
     while (url) {
@@ -381,10 +394,12 @@ export class TransactionService {
         console.error("❌ Invalid response structure or missing data.");
         break;
       }
+      console.log("response.next", response.next);
 
       allRecords = allRecords.concat(response.data);
-      url = response.next || null;
+      // url = response.next || null;
     }
+    return allRecords;
 
     if (allRecords.length === 0) {
       console.log("⚠️ No attendance records found.");
@@ -494,13 +509,16 @@ export class TransactionService {
     try {
       const startDate = new Date(start).toISOString().split("T")[0];
       const endDate = new Date(end).toISOString().split("T")[0];
+      const adjustedEndDate = new Date(end);
+      adjustedEndDate.setUTCHours(23, 59, 59, 999);
+      const formattedEndDate = adjustedEndDate.toISOString();
 
       const deviceUrl = process.env.DEVICE_URL as string;
       const jwtToken = process.env.JWT_TOKEN as string;
 
       let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
         startDate
-      )}&end_date=${encodeURIComponent(endDate)}&page_size=500`;
+      )}&end_date=${encodeURIComponent(endDate)}&page_size=784`;
 
       let allRecords: any[] = [];
 
@@ -514,7 +532,15 @@ export class TransactionService {
         });
 
         const response = res.data?.response || res.data;
-        if (!response?.data || !Array.isArray(response.data)) break;
+        console.log("Fetching URL:", url);
+        console.log("Response status:", res.status);
+        if (!response?.data || !Array.isArray(response.data)) {
+          console.log(
+            "❌ Error fetching Biotime attendance records.",
+            response
+          );
+          break;
+        }
 
         allRecords = allRecords.concat(response.data);
         url = response.next || null;
@@ -610,7 +636,7 @@ export class TransactionService {
       for (const user of users) {
         const res = await clockify.get(
           `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
-          { params: { start, end } }
+          { params: { start, end: formattedEndDate } }
         );
 
         const entries = res.data;
