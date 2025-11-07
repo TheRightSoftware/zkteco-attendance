@@ -1,4 +1,5 @@
 import { sendMessage } from "@src/utils/sendMessage";
+import { parseTime } from "@src/utils/time";
 import axios from "axios";
 import moment from "moment-timezone";
 import dotenv from "dotenv";
@@ -74,10 +75,25 @@ export class TransactionService {
         };
 
         await upsertToAttendanceSheet(entry);
+        
+        // Calculate total work time for checkout messages
+        let messageState = punch.punch_state_display;
+        if (status.includes("check out")) {
+          const totalWorkTime = await getTotalWorkTimeFromSheet(
+            userId,
+            fullName,
+            formattedDate,
+            formattedTime
+          );
+          if (totalWorkTime) {
+            messageState = `${punch.punch_state_display} | Work Time: ${totalWorkTime}`;
+          }
+        }
+        
         await sendMessage(
           `${fullName} (${userId})`,
           punch.punch_time,
-          punch.punch_state_display
+          messageState
         );
       }
     };
@@ -376,7 +392,7 @@ export class TransactionService {
     });
     console.log("Response status:", res.status);
     console.log("Response headers:", res.headers);
-    return JSON.stringify(res.data);
+    // return JSON.stringify(res.data);
 
 
     // Fetch all pages
@@ -399,7 +415,7 @@ export class TransactionService {
       allRecords = allRecords.concat(response.data);
       // url = response.next || null;
     }
-    return allRecords;
+    // return allRecords;
 
     if (allRecords.length === 0) {
       console.log("⚠️ No attendance records found.");
@@ -465,11 +481,6 @@ export class TransactionService {
         const [h, m] = time.split(":").map(Number);
         return h * 60 + m;
       };
-
-      const toHHMM = (min: number) =>
-        `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
-          min % 60
-        ).padStart(2, "0")}`;
 
       const checkInMin = toMinutes(row["Check In"]);
       const checkOutMin = toMinutes(row["Check Out"]);
@@ -603,10 +614,6 @@ export class TransactionService {
           const [h, m, s] = t.split(":").map(Number);
           return h * 60 + m;
         };
-        const toHHMM = (min: number) =>
-          `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
-            min % 60
-          ).padStart(2, "0")}`;
 
         const checkInMin = toMinutes(row["Check In"]);
         const checkOutMin = toMinutes(row["Check Out"]);
@@ -827,11 +834,6 @@ export class TransactionService {
       const formatSummary = (group: Record<string, any>) =>
         Object.entries(group).map(([sheetName, users]) => {
           const rows = Object.values(users).map((user: any) => {
-            const toHHMM = (min: number) =>
-              `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(
-                min % 60
-              ).padStart(2, "0")}`;
-
             return {
               Name: user.Name,
               "Total Office Work Time": toHHMM(
@@ -993,6 +995,106 @@ function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
+const getTotalWorkTimeFromSheet = (
+  userId: string,
+  name: string,
+  date: string,
+  checkOutTime: string
+): string => {
+  try {
+    if (!fs.existsSync(filePath)) return "";
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) return "";
+
+    const headers = [
+      "Name",
+      "UserID",
+      "Date",
+      "checkIn",
+      "checkOut",
+      "breakIn",
+      "breakOut",
+      "breakIn2",
+      "breakOut2",
+      "breakIn3",
+      "breakOut3",
+      "WFH Start 1",
+      "WFH End 1",
+      "WFH Start 2",
+      "WFH End 2",
+      "WFH Start 3",
+      "WFH End 3",
+      "WFH Start 4",
+      "WFH End 4",
+      "Total_Hour",
+      "Source",
+      "Project",
+    ];
+
+    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+    const existingRows = data.slice(1);
+
+    const row = existingRows.find((row) => {
+      const matchByUserId =
+        userId && row[1] === userId && row[2] === date;
+      const matchByName =
+        !userId && row[0] === name && row[2] === date;
+      return matchByUserId || matchByName;
+    });
+
+    if (!row) return "";
+
+    const checkInIdx = headers.indexOf("checkIn");
+    const checkOutIdx = headers.indexOf("checkOut");
+    const breakIns = [
+      headers.indexOf("breakIn"),
+      headers.indexOf("breakIn2"),
+      headers.indexOf("breakIn3"),
+    ];
+    const breakOuts = [
+      headers.indexOf("breakOut"),
+      headers.indexOf("breakOut2"),
+      headers.indexOf("breakOut3"),
+    ];
+
+    const checkIn = row[checkInIdx];
+    // Always use the provided checkOutTime (current checkout being processed)
+    const checkOut = checkOutTime || row[checkOutIdx];
+
+    if (!checkIn || !checkOut) return "";
+
+    const checkInMin = parseTime(checkIn);
+    const checkOutMin = parseTime(checkOut);
+
+    if (checkInMin === 0 || checkOutMin === 0) return "";
+
+    // Calculate total break time
+    let breakMin = 0;
+    for (let i = 0; i < breakIns.length; i++) {
+      const breakIn = row[breakIns[i]];
+      const breakOut = row[breakOuts[i]];
+      if (breakIn && breakOut) {
+        const breakInMin = parseTime(breakIn);
+        const breakOutMin = parseTime(breakOut);
+        if (breakInMin > 0 && breakOutMin > 0) {
+          breakMin += breakOutMin - breakInMin;
+        }
+      }
+    }
+
+    // Calculate total work time: (checkOut - checkIn) - breakTime
+    const totalWorkMin = checkOutMin - checkInMin - breakMin;
+    if (totalWorkMin < 0) return "";
+
+    return toHHMM(totalWorkMin);
+  } catch (error) {
+    console.error("Error calculating total work time:", error);
+    return "";
+  }
+};
+
 export const upsertToAttendanceSheet = async (entry: any) => {
   let workbook, worksheet;
   const status = entry.Status?.toLowerCase() || "";
@@ -1055,6 +1157,51 @@ export const upsertToAttendanceSheet = async (entry: any) => {
 
   const isWFH = entry.Source === "Clockify";
 
+  const calculateTotalWorkTime = (row: string[]): string => {
+    const checkInIdx = headers.indexOf("checkIn");
+    const checkOutIdx = headers.indexOf("checkOut");
+    const breakIns = [
+      headers.indexOf("breakIn"),
+      headers.indexOf("breakIn2"),
+      headers.indexOf("breakIn3"),
+    ];
+    const breakOuts = [
+      headers.indexOf("breakOut"),
+      headers.indexOf("breakOut2"),
+      headers.indexOf("breakOut3"),
+    ];
+
+    const checkIn = row[checkInIdx];
+    const checkOut = row[checkOutIdx];
+
+    if (!checkIn || !checkOut) return "";
+
+    const checkInMin = parseTime(checkIn);
+    const checkOutMin = parseTime(checkOut);
+
+    if (checkInMin === 0 || checkOutMin === 0) return "";
+
+    // Calculate total break time
+    let breakMin = 0;
+    for (let i = 0; i < breakIns.length; i++) {
+      const breakIn = row[breakIns[i]];
+      const breakOut = row[breakOuts[i]];
+      if (breakIn && breakOut) {
+        const breakInMin = parseTime(breakIn);
+        const breakOutMin = parseTime(breakOut);
+        if (breakInMin > 0 && breakOutMin > 0) {
+          breakMin += breakOutMin - breakInMin;
+        }
+      }
+    }
+
+    // Calculate total work time: (checkOut - checkIn) - breakTime
+    const totalWorkMin = checkOutMin - checkInMin - breakMin;
+    if (totalWorkMin < 0) return ""; // Invalid calculation
+
+    return toHHMM(totalWorkMin);
+  };
+
   const assignTime = (row: string[]) => {
     if (isWFH) {
       // WFH: Fill WFH Start/End pairs in order
@@ -1101,6 +1248,12 @@ export const upsertToAttendanceSheet = async (entry: any) => {
         if (!row[checkInIdx]) row[checkInIdx] = formattedTime;
       } else if (lowerStatus.includes("check out")) {
         if (!row[checkOutIdx]) row[checkOutIdx] = formattedTime;
+        // Calculate total work time when checkout happens
+        const totalHourIdx = headers.indexOf("Total_Hour");
+        const totalWorkTime = calculateTotalWorkTime(row);
+        if (totalWorkTime) {
+          row[totalHourIdx] = totalWorkTime;
+        }
       } else if (lowerStatus.includes("break start")) {
         for (const idx of breakIns) {
           if (!row[idx]) {
@@ -1113,6 +1266,15 @@ export const upsertToAttendanceSheet = async (entry: any) => {
           if (!row[idx]) {
             row[idx] = formattedTime;
             break;
+          }
+        }
+        // Recalculate total work time when break ends (in case checkout already happened)
+        const checkOutIdx = headers.indexOf("checkOut");
+        if (row[checkOutIdx]) {
+          const totalHourIdx = headers.indexOf("Total_Hour");
+          const totalWorkTime = calculateTotalWorkTime(row);
+          if (totalWorkTime) {
+            row[totalHourIdx] = totalWorkTime;
           }
         }
       }
