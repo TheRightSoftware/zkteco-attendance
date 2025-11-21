@@ -26,6 +26,23 @@ const sheetName = "Attendance";
 
 var punchSet = new Set<string>();
 let jwtToken = process.env.JWT_TOKEN as string;
+let isSavingCache = false; // Lock for cache save operations
+
+let lastMessageTime = 0;
+const MIN_MESSAGE_INTERVAL = 15000;
+
+const waitForRateLimit = async (): Promise<void> => {
+  const now = Date.now();
+  const timeSinceLastMessage = now - lastMessageTime;
+  
+  if (timeSinceLastMessage < MIN_MESSAGE_INTERVAL) {
+    const waitTime = MIN_MESSAGE_INTERVAL - timeSinceLastMessage;
+    console.log(`⏳ Waiting ${Math.ceil(waitTime / 1000)}s...`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  
+  lastMessageTime = Date.now();
+};
 
 export class TransactionService {
   private previousStates = new Map<string, string>(); // userId => timerId
@@ -52,15 +69,16 @@ export class TransactionService {
     const processPunches = async (punches: any[]) => {
       for (const punch of punches) {
         const uniqueKey = `${punch.emp_code}_${punch.punch_time}`;
-        if (isDuplicate(uniqueKey)) continue;
-        markAsProcessed(uniqueKey);
+        
+        if (isDuplicate(uniqueKey)) {
+          console.log(`⏭️ Skipping duplicate: ${uniqueKey}`);
+          continue;
+        }
 
         const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
         const formattedDate = punchMoment.format("MMMM DD, YYYY");
         const formattedTime = punchMoment.format("hh:mm A");
-        const fullName = punch.last_name
-          ? `${punch.first_name} ${punch.last_name}`
-          : punch.first_name;
+        const fullName = punch.last_name ? `${punch.first_name} ${punch.last_name}` : punch.first_name;
         const userId = String(punch.emp_code);
         const status = punch.punch_state_display?.toLowerCase();
 
@@ -70,31 +88,30 @@ export class TransactionService {
           Date: formattedDate,
           Status: status,
           Time: formattedTime,
-          Source: "Zkteco", // or "Clockify"
+          Source: "Zkteco",
           Project: "",
         };
 
         await upsertToAttendanceSheet(entry);
         
-        // Calculate total work time for checkout messages
         let messageState = punch.punch_state_display;
         if (status.includes("check out")) {
-          const totalWorkTime = await getTotalWorkTimeFromSheet(
-            userId,
-            fullName,
-            formattedDate,
-            formattedTime
-          );
+          const totalWorkTime = await getTotalWorkTimeFromSheet(userId, fullName, formattedDate, formattedTime);
           if (totalWorkTime) {
             messageState = `${punch.punch_state_display} | Work Time: ${totalWorkTime}`;
           }
         }
         
-        await sendMessage(
-          `${fullName} (${userId})`,
-          punch.punch_time,
-          messageState
-        );
+        try {
+          await waitForRateLimit();
+          await sendMessage(`${fullName} (${userId})`, punch.punch_time, messageState);
+          
+          markAsProcessed(uniqueKey);
+          await savePunchCache();
+          console.log(`✅ Processed: ${uniqueKey}`);
+        } catch (error) {
+          console.error(`❌ Failed: ${uniqueKey}`, error);
+        }
       }
     };
 
@@ -114,7 +131,7 @@ export class TransactionService {
       }
 
       setLastFetchedTime(endTime);
-      savePunchCache();
+      await savePunchCache();
       return response.data;
     } catch (error: any) {
       const status = error?.response?.status;
@@ -144,7 +161,7 @@ export class TransactionService {
         }
 
         setLastFetchedTime(endTime);
-        savePunchCache();
+        await savePunchCache();
         return retryResponse.data;
       } else {
         throw error;
@@ -180,10 +197,9 @@ export class TransactionService {
     try {
       const users: any = await getUsers();
 
-      console.log("length is ", users.length);
       const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
       for (const user of users) {
-        await delay(200); // 200ms delay between users
+        await delay(200);
 
         const runningEntry = await getRunningEntry(user.id);
         const lastTimerId = this.previousStates.get(user.id);
@@ -191,42 +207,30 @@ export class TransactionService {
         if (runningEntry) {
           var project = await getProjectName(runningEntry.projectId);
           if (lastTimerId !== runningEntry.id) {
-            const msg = `${user.name} | ${project} | ${runningEntry?.timeInterval?.start} | Signing In`;
-
             this.previousStates.set(user.id, runningEntry.id);
             savePreviousStatesToFile(this.previousStates);
 
-            sendMessage(
+            await waitForRateLimit();
+            
+            await sendMessage(
               `🏠 ${user.name}`,
               runningEntry?.timeInterval?.start,
               "Signing In",
               project,
               true
             );
-            const punchMoment = moment
-              .utc(runningEntry.timeInterval.start)
-              .tz("Asia/Karachi");
 
+            const punchMoment = moment.utc(runningEntry.timeInterval.start).tz("Asia/Karachi");
             const formattedDate = punchMoment.format("MMMM DD, YYYY");
             const formattedTime = punchMoment.format("hh:mm A");
-            //--------------------------------
-            // appendToAttendanceSheet({
-            //   Name: user.name,
-            //   UserID: "",
-            //   Date: formattedDate,
-            //   Time: formattedTime,
-            //   Status: "Signing In",
-            //   Total_Hour: "",
-            //   Source: "Clockify",
-            //   Project: project,
-            // });
+
             const entry = {
               Name: user.name,
               UserID: "",
               Date: formattedDate,
               Status: "Signing In",
               Time: formattedTime,
-              Source: "Clockify", // or "Clockify"
+              Source: "Clockify",
               Project: project,
             };
 
@@ -245,43 +249,28 @@ export class TransactionService {
               const worked = formatDuration(totalSeconds);
 
               const project = await getProjectName(lastEntry.projectId);
-              const formattedEnd = moment(end).toISOString();
 
-              const msg = `${user.name} | ${
-                project || "No Project"
-              } | ${formattedEnd} | Signing off | Hours: ${worked}`;
-
-              sendMessage(
+              await waitForRateLimit();
+              
+              await sendMessage(
                 `🏠 ${user.name}`,
                 end,
                 `Signing off | ${worked}`,
                 project,
                 true
               );
-              const punchMoment = moment(
-                runningEntry?.timeInterval?.start,
-                "YYYY-MM-DD HH:mm:ss"
-              );
+
+              const punchMoment = moment(runningEntry?.timeInterval?.start, "YYYY-MM-DD HH:mm:ss");
               const formattedDate = punchMoment.format("MMMM DD, YYYY");
               const formattedTime = punchMoment.format("hh:mm A");
-              //--------------------------------
-              // appendToAttendanceSheet({
-              //   Name: user.name,
-              //   UserID: "",
-              //   Date: formattedDate,
-              //   Time: formattedTime,
-              //   Status: "Signing off",
-              //   Total_Hour: worked,
-              //   Source: "Clockify",
-              //   Project: project,
-              // });
+
               const entry = {
                 Name: user.name,
                 UserID: "",
                 Date: formattedDate,
                 Status: "Signing off",
                 Time: formattedTime,
-                Source: "Clockify", // or "Clockify"
+                Source: "Clockify",
                 Project: project,
               };
               await upsertToAttendanceSheet(entry);
@@ -381,7 +370,7 @@ export class TransactionService {
     //   start_date
     // )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
     let url =
-      "http://192.168.100.7/att/api/transactionReport/?end_date=2025-10-15&page=3&page_size=500&start_date=-10-01";
+      "http://192.168.100.150/att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=800&start_date=-11-01";
 
     let allRecords: any[] = [];
     const res = await axios.get(url, {
@@ -415,7 +404,7 @@ export class TransactionService {
       allRecords = allRecords.concat(response.data);
       // url = response.next || null;
     }
-    // return allRecords;
+    return allRecords;
 
     if (allRecords.length === 0) {
       console.log("⚠️ No attendance records found.");
@@ -1326,13 +1315,20 @@ export const setLastFetchedTime = (time: moment.Moment) => {
 export const loadPunchCache = () => {
   try {
     if (fs.existsSync(processedPunchesFilePath)) {
-      const data = JSON.parse(
-        fs.readFileSync(processedPunchesFilePath, "utf-8")
-      );
-      punchSet = new Set(data);
+      const fileContent = fs.readFileSync(processedPunchesFilePath, "utf-8").trim();
+      if (fileContent) {
+        const data = JSON.parse(fileContent);
+        punchSet = new Set(Array.isArray(data) ? data : []);
+        console.log(`📦 Loaded ${punchSet.size} punches`);
+      } else {
+        punchSet = new Set();
+      }
+    } else {
+      punchSet = new Set();
     }
   } catch (err) {
-    console.error("⚠️ Failed to load punch cache:", err);
+    console.error("⚠️ Cache load failed:", err);
+    punchSet = new Set();
   }
 };
 
@@ -1344,13 +1340,19 @@ export const markAsProcessed = (key: string) => {
   punchSet.add(key);
 };
 
-export const savePunchCache = () => {
+export const savePunchCache = async () => {
+  if (isSavingCache) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (isSavingCache) return;
+  }
+
+  isSavingCache = true;
   try {
-    fs.writeFileSync(
-      processedPunchesFilePath,
-      JSON.stringify(Array.from(punchSet))
-    );
+    const data = JSON.stringify(Array.from(punchSet), null, 2);
+    fs.writeFileSync(processedPunchesFilePath, data, "utf-8");
   } catch (err) {
-    console.error("⚠️ Failed to save punch cache:", err);
+    console.error("⚠️ Cache save failed:", err);
+  } finally {
+    isSavingCache = false;
   }
 };
