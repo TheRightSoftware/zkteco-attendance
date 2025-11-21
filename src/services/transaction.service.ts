@@ -370,7 +370,7 @@ export class TransactionService {
     //   start_date
     // )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
     let url =
-      "http://192.168.100.150/att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=800&start_date=-11-01";
+      `${deviceUrl}att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=800&start_date=-11-01`;
 
     let allRecords: any[] = [];
     const res = await axios.get(url, {
