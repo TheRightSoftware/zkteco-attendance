@@ -26,7 +26,8 @@ const sheetName = "Attendance";
 
 var punchSet = new Set<string>();
 let jwtToken = process.env.JWT_TOKEN as string;
-let isSavingCache = false; // Lock for cache save operations
+let isSavingCache = false;
+let employeeNicknameCache = new Map<string, string>();
 
 let lastMessageTime = 0;
 const MIN_MESSAGE_INTERVAL = 10000; //10 sec
@@ -95,16 +96,26 @@ export class TransactionService {
         await upsertToAttendanceSheet(entry);
         
         let messageState = punch.punch_state_display;
+        let rocketChatUsername: string | undefined = undefined;
+        
         if (status.includes("check out")) {
           const totalWorkTime = await getTotalWorkTimeFromSheet(userId, fullName, formattedDate, formattedTime);
           if (totalWorkTime) {
             messageState = `${punch.punch_state_display} | Work Time: ${totalWorkTime}`;
+            rocketChatUsername = await getEmployeeRecord(punch.emp_code, deviceUrl, jwtToken);
           }
         }
         
         try {
           await waitForRateLimit();
-          await sendMessage(`${fullName} (${userId})`, punch.punch_time, messageState);
+          await sendMessage(
+            `${fullName} (${userId})`,
+            punch.punch_time,
+            messageState,
+            undefined,
+            false,
+            rocketChatUsername
+          );
           
           markAsProcessed(uniqueKey);
           await savePunchCache();
@@ -1355,4 +1366,32 @@ export const savePunchCache = async () => {
   } finally {
     isSavingCache = false;
   }
+};
+export const getEmployeeRecord = async (empCode: string, deviceUrl: string, jwtToken: string): Promise<string | undefined> => {
+  if (employeeNicknameCache.has(empCode)) {
+    return employeeNicknameCache.get(empCode);
+  }
+
+  try {
+    const response = await axios.get(`${deviceUrl}personnel/api/employees/`, {
+      params: { emp_code: empCode },
+      headers: {
+        Authorization: `JWT ${jwtToken}`,
+      },
+    });
+
+    if (response.data?.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
+      const employee = response.data.data[0];
+      const nickname = employee.nickname;
+      
+      if (nickname) {
+        employeeNicknameCache.set(empCode, nickname);
+        return nickname;
+      }
+    }
+  } catch (error: any) {
+    console.error(`⚠️ Failed to fetch employee for ${empCode}`);
+  }
+  
+  return undefined;
 };
