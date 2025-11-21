@@ -29,7 +29,7 @@ let jwtToken = process.env.JWT_TOKEN as string;
 let isSavingCache = false; // Lock for cache save operations
 
 let lastMessageTime = 0;
-const MIN_MESSAGE_INTERVAL = 15000;
+const MIN_MESSAGE_INTERVAL = 10000; //10 sec
 
 const waitForRateLimit = async (): Promise<void> => {
   const now = Date.now();

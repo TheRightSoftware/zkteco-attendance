@@ -79,14 +79,14 @@ const safeGetClockify = async () => {
   try {
     server.listen(app.get("port"), () => {
       console.log("🚀 App running at http://localhost:%d in %s mode", app.get("port"), app.get("env"));
-      console.log("📅 Jobs: Attendance (1 min) | Clockify (10 sec)");
+      console.log("📅 Jobs: Attendance (1 min) | Clockify (20 sec)");
     });
 
     await safeFetchTransactions();
     await safeGetClockify();
 
     setInterval(safeFetchTransactions, 60000);
-    setInterval(safeGetClockify, 10000);
+    setInterval(safeGetClockify, 20000);
     
     console.log("✅ All jobs scheduled\n");
   } catch (error) {
