@@ -97,12 +97,13 @@ export class TransactionService {
         
         let messageState = punch.punch_state_display;
         let rocketChatUsername: string | undefined = undefined;
-        
+
         if (status.includes("check out")) {
           const totalWorkTime = await getTotalWorkTimeFromSheet(userId, fullName, formattedDate, formattedTime);
+          rocketChatUsername = await getEmployeeRecord(punch.emp_code, deviceUrl, jwtToken);
+
           if (totalWorkTime) {
             messageState = `${punch.punch_state_display} | Work Time: ${totalWorkTime}`;
-            rocketChatUsername = await getEmployeeRecord(punch.emp_code, deviceUrl, jwtToken);
           }
         }
         
@@ -114,7 +115,8 @@ export class TransactionService {
             messageState,
             undefined,
             false,
-            rocketChatUsername
+            rocketChatUsername,
+            String(userId)
           );
           
           markAsProcessed(uniqueKey);
@@ -300,6 +302,35 @@ export class TransactionService {
     }
   };
 
+  public getRocketChatUsers = async (): Promise<any> => {
+    return await fetchAllRocketChatUsers();
+  };
+
+  public exportRocketChatUsers = async () => {
+    const users = await fetchAllRocketChatUsers();
+    
+    const workbook = XLSX.utils.book_new();
+    
+    const rows = users.map((user: any) => ({
+      "User ID": user._id,
+      "Username": user.username || "",
+      "Name": user.name || "",
+      "Email": user.emails?.[0]?.address || "",
+      "Active": user.active ? "Yes" : "No",
+      "Status": user.status || "",
+      "Roles": user.roles?.join(", ") || "",
+      "Created At": user.createdAt ? moment(user.createdAt).format("YYYY-MM-DD HH:mm:ss") : "",
+      "Last Login": user.lastLogin ? moment(user.lastLogin).format("YYYY-MM-DD HH:mm:ss") : "",
+    }));
+    
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, sheet, "Rocket.Chat Users");
+    
+    const fileName = `rocketchat-users-${moment().format("YYYY-MM-DD")}.xlsx`;
+    
+    return { workbook, fileName };
+  };
+
   // From Zkteco device.
   public getAllUsersAttendance = async (data: any) => {
     const { start, end } = data;
@@ -374,14 +405,14 @@ export class TransactionService {
     const deviceUrl = process.env.DEVICE_URL as string;
     const jwtToken = process.env.JWT_TOKEN as string;
 
-    const start_date = "2025-10-01";
-    const end_date = "2025-10-14";
+    const start_date = "2025-11-01";
+    const end_date = "2025-11-21";
 
     // let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
     //   start_date
     // )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
     let url =
-      `${deviceUrl}att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=800&start_date=-11-01`;
+      `${deviceUrl}att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=2000&start_date=-11-01`;
 
     let allRecords: any[] = [];
     const res = await axios.get(url, {
@@ -529,7 +560,7 @@ export class TransactionService {
 
       let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
         startDate
-      )}&end_date=${encodeURIComponent(endDate)}&page_size=784`;
+      )}&end_date=${encodeURIComponent(endDate)}&page_size=2397`;
 
       let allRecords: any[] = [];
 
@@ -565,6 +596,9 @@ export class TransactionService {
         console.log("⚠️ No Biotime attendance records found.");
         return;
       }
+
+      console.log("allRecords", allRecords);
+      
 
       // 📦 Group by emp_code + date
       const grouped: { [key: string]: any[] } = {};
@@ -1394,4 +1428,50 @@ export const getEmployeeRecord = async (empCode: string, deviceUrl: string, jwtT
   }
   
   return undefined;
+};
+
+export const fetchAllRocketChatUsers = async () => {
+  const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
+  const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
+  const userId = process.env.ROCKET_CHAT_USER_ID as string;
+
+  try {
+    const allUsers: any[] = [];
+    let offset = 0;
+    const pageSize = 100;
+    let total = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await axios.get(`${rocketChatServer}/api/v1/users.list`, {
+        params: {
+          count: pageSize,
+          offset: offset,
+        },
+        headers: {
+          "X-Auth-Token": authToken,
+          "X-User-Id": userId,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (response.data?.success && response.data?.users) {
+        allUsers.push(...response.data.users);
+        total = response.data.total || allUsers.length;
+        offset += pageSize;
+        
+        console.log(`📥 Fetched ${allUsers.length}/${total} users...`);
+        
+        hasMore = allUsers.length < total && response.data.users.length === pageSize;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    console.log(`✅ Total Rocket.Chat users: ${allUsers.length}`);
+    return allUsers;
+  } catch (error: any) {
+    console.error("❌ Failed to fetch Rocket.Chat users:", error.response?.data || error.message);
+    throw error;
+  }
 };

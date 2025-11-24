@@ -12,6 +12,12 @@ transactionRouter.get("/getJWTToken", (...args: [Request, Response]) =>
 transactionRouter.get("/getClockify", (...args: [Request, Response]) =>
   transactionController.getClockify(...args)
 );
+transactionRouter.get("/getRocketChatUsers", (...args: [Request, Response]) =>
+  transactionController.getRocketChatUsers(...args)
+);
+transactionRouter.get("/exportRocketChatUsers", (...args: [Request, Response]) =>
+  transactionController.exportRocketChatUsers(...args)
+);
 transactionRouter.get("/getAllUsersAttendance", (...args: [Request, Response]) =>
   transactionController.getAllUsersAttendance(...args)
 );

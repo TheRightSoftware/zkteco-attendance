@@ -24,8 +24,9 @@ export const sendMessage = async (
   project?: string,
   isFromClockify: boolean = false,
   rocketChatUsername?: string,
+  user_Id?: string,
   maxRetries = 3,
-  delayMs = 1000
+  delayMs = 1000,
 ) => {
   const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
   const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
@@ -34,11 +35,11 @@ export const sendMessage = async (
   const formattedTime = moment(punchTime).format("h:mm A");
   let message = isFromClockify
     ? `${firstName}${project ? ` | ${project}` : ""} | ${formattedTime} | ${punchState}`
-    : `${firstName} | ${formattedTime} | ${punchState}`;
+    : `${rocketChatUsername ? `@${rocketChatUsername} (${user_Id})` : firstName} | ${formattedTime} | ${punchState}`;
   
-  if (rocketChatUsername) {
-    message = `@${rocketChatUsername} ${message}`;
-  }
+  // if (rocketChatUsername) {
+  //   message = `@${rocketChatUsername} ${message}`;
+  // }
 
   let attempt = 0;
 

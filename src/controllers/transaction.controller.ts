@@ -67,6 +67,50 @@ export class TransactionController {
     }
   };
 
+  public getRocketChatUsers = async (req: Request, res: Response) => {
+    try {
+      const response: any = await this.__service.getRocketChatUsers();
+      res.status(200).json({
+        statusCode: 200,
+        message: "Rocket.Chat users fetched successfully.",
+        count: response.length,
+        users: response,
+      });
+    } catch (error: any) {
+      res.status(403).send({
+        statusCode: 403,
+        message: error.message,
+      });
+    }
+  };
+
+  public exportRocketChatUsers = async (req: Request, res: Response) => {
+    try {
+      const { workbook, fileName }: any = await this.__service.exportRocketChatUsers();
+
+      const buffer = XLSX.write(workbook, {
+        bookType: "xlsx",
+        type: "buffer",
+      });
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fileName}"`
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.send(buffer);
+    } catch (error: any) {
+      console.log(error);
+      res.status(403).send({
+        statusCode: 403,
+        message: error.message,
+      });
+    }
+  };
+
   public getAllUsersAttendance = async (req: Request, res: Response) => {
     try {
       const { query } = req;
