@@ -99,7 +99,12 @@ export class TransactionService {
         let rocketChatUsername: string | undefined = undefined;
 
         if (status.includes("check out")) {
-          const totalWorkTime = await getTotalWorkTimeFromSheet(userId, fullName, formattedDate, formattedTime);
+          const totalWorkTime = await getTotalWorkTimeFromBiotimeAPI(
+            userId,
+            formattedDate,
+            deviceUrl,
+            jwtToken
+          );
           rocketChatUsername = await getEmployeeRecord(punch.emp_code, deviceUrl, jwtToken);
 
           if (totalWorkTime) {
@@ -408,11 +413,11 @@ export class TransactionService {
     const start_date = "2025-11-01";
     const end_date = "2025-11-21";
 
-    // let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
-    //   start_date
-    // )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
-    let url =
-      `${deviceUrl}att/api/transactionReport/?end_date=2025-11-17&page=1&page_size=2000&start_date=-11-01`;
+    let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+      start_date
+    )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
+    // let url =
+    //   `${deviceUrl}iclock/api/transactions/?end_time=2025-11-30&page=1&limit=10000&start_time=2025-11-01`;
 
     let allRecords: any[] = [];
     const res = await axios.get(url, {
@@ -444,9 +449,9 @@ export class TransactionService {
       console.log("response.next", response.next);
 
       allRecords = allRecords.concat(response.data);
-      // url = response.next || null;
+      url = response.next || null;
     }
-    return allRecords;
+    // return allRecords;
 
     if (allRecords.length === 0) {
       console.log("⚠️ No attendance records found.");
@@ -548,9 +553,10 @@ export class TransactionService {
     const { start, end } = data;
     console.log("🔴 start:", start);
 
+    const startDate = new Date(start).toISOString().split("T")[0];
+    const endDate = new Date(end).toISOString().split("T")[0];
+
     try {
-      const startDate = new Date(start).toISOString().split("T")[0];
-      const endDate = new Date(end).toISOString().split("T")[0];
       const adjustedEndDate = new Date(end);
       adjustedEndDate.setUTCHours(23, 59, 59, 999);
       const formattedEndDate = adjustedEndDate.toISOString();
@@ -558,37 +564,132 @@ export class TransactionService {
       const deviceUrl = process.env.DEVICE_URL as string;
       const jwtToken = process.env.JWT_TOKEN as string;
 
-      let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+      // 🔍 Fast binary search to find maximum working page_size
+      const findMaxPageSize = async (): Promise<number> => {
+        let low = 1;
+        let high = 5000; // Start with reasonable upper bound
+        let best = 100; // Fallback value
+
+        console.log("🔍 Finding maximum working page_size (binary search)...");
+
+        // First, check if a high value works to set upper bound
+        const testHigh = async (size: number): Promise<boolean> => {
+          const testUrl = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+            startDate
+          )}&end_date=${encodeURIComponent(endDate)}&page_size=${size}`;
+          
+          console.log(`🔍 Testing page_size=${size}...`);
+          
+          try {
+            const res: any = await axios.get(testUrl, {
+              headers: {
+                Authorization: `JWT ${jwtToken}`,
+                Accept: "application/json",
+              },
+              validateStatus: () => true,
+            });
+
+            const isHtmlError = typeof res.data === 'string' && 
+              (res.data.includes('<!DOCTYPE') || res.data.includes('<html>') || res.data.includes('Page not found'));
+
+            if (isHtmlError || res.status !== 200) {
+              console.log(`❌ page_size=${size} failed (status: ${res.status}, HTML error: ${isHtmlError})`);
+              return false;
+            }
+
+            const response: any = res.data?.response || res.data;
+            const isValid = response?.data && Array.isArray(response.data);
+            
+            if (isValid) {
+              console.log(`✅ page_size=${size} works! (found ${response.data.length} records)`);
+            } else {
+              console.log(`❌ page_size=${size} failed (invalid response structure)`);
+            }
+            
+            return isValid;
+          } catch (error: any) {
+            console.log(`❌ page_size=${size} failed with error: ${error.message}`);
+            return false;
+          }
+        };
+
+        // Binary search
+        console.log(`🔍 Starting binary search: low=${low}, high=${high}`);
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          console.log(`\n📊 Binary search step: testing mid=${mid} (range: ${low}-${high}, best so far: ${best})`);
+          
+          const works = await testHigh(mid);
+          
+          if (works) {
+            best = mid;
+            low = mid + 1; // Try higher
+            console.log(`✅ page_size=${mid} works! Updated best=${best}, trying higher (new range: ${low}-${high})`);
+          } else {
+            high = mid - 1; // Try lower
+            console.log(`❌ page_size=${mid} failed, trying lower (new range: ${low}-${high})`);
+          }
+        }
+
+        console.log(`\n✅ Maximum working page_size found: ${best}`);
+        return best;
+      };
+
+      const optimalPageSize = await findMaxPageSize();
+
+      let url: string | null = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
         startDate
-      )}&end_date=${encodeURIComponent(endDate)}&page_size=2397`;
+      )}&end_date=${encodeURIComponent(endDate)}&page_size=${optimalPageSize}`;
 
       let allRecords: any[] = [];
 
-      // 🔁 Fetch Biotime Data
+      // 🔁 Fetch Biotime Data with pagination
       while (url) {
-        const res = await axios.get(url, {
-          headers: {
-            Authorization: `JWT ${jwtToken}`,
-            Accept: "application/json",
-          },
-        });
+        try {
+          const res: any = await axios.get(url, {
+            headers: {
+              Authorization: `JWT ${jwtToken}`,
+              Accept: "application/json",
+            },
+            validateStatus: () => true,
+          });
 
-        const response = res.data?.response || res.data;
-        console.log("Fetching URL:", url);
-        console.log("Response status:", res.status);
-        if (!response?.data || !Array.isArray(response.data)) {
-          console.log(
-            "❌ Error fetching Biotime attendance records.",
-            response
-          );
+          console.log("Fetching URL:", url);
+          console.log("Response status:", res.status);
+
+          // Check if response is HTML (error page) - happens on last page sometimes
+          const isHtmlError = typeof res.data === 'string' && 
+            (res.data.includes('<!DOCTYPE') || res.data.includes('<html>') || res.data.includes('Page not found'));
+
+          if (isHtmlError || res.status !== 200) {
+            console.log("⚠️ API returned error page (likely last page reached)");
+            console.log("Stopping pagination. Total records fetched:", allRecords.length);
+            break;
+          }
+
+          const response: any = res.data?.response || res.data;
+          
+          if (!response?.data || !Array.isArray(response.data)) {
+            console.log("❌ Invalid response structure");
+            break;
+          }
+
+          allRecords = allRecords.concat(response.data);
+          console.log(`✅ Fetched ${response.data.length} records (Total: ${allRecords.length})`);
+
+          // Get next page URL
+          const nextUrl: string | null | undefined = response.next;
+          if (nextUrl && typeof nextUrl === 'string' && nextUrl.trim() !== '') {
+            url = nextUrl;
+            console.log("⏳ Waiting 2 seconds before next request...");
+            await this.delay(2000);
+          } else {
+            console.log("✅ No more pages to fetch");
+            url = null;
+          }
+        } catch (error: any) {
+          console.error("❌ Error fetching page:", error.message);
           break;
-        }
-
-        allRecords = allRecords.concat(response.data);
-        url = response.next || null;
-        if (url) {
-          console.log("⏳ Waiting 20 seconds before next request...");
-          await this.delay(20000); // wait 20 seconds before the next API hit
         }
       }
 
@@ -597,8 +698,6 @@ export class TransactionService {
         return;
       }
 
-      console.log("allRecords", allRecords);
-      
 
       // 📦 Group by emp_code + date
       const grouped: { [key: string]: any[] } = {};
@@ -901,15 +1000,23 @@ export class TransactionService {
       const status = error?.response?.status;
       if (status === 401 || error?.response?.data?.code === "token_not_valid") {
         console.warn("🔒 Token expired. Fetching new token...");
-        const newToken = await this.getJWTToken({
-          userName: process.env.DEVICE_USERNAME as string,
-          Password: process.env.DEVICE_PASSWORD as string,
-        });
+        try {
+          const newToken = await this.getJWTToken({
+            userName: process.env.DEVICE_USERNAME as string,
+            Password: process.env.DEVICE_PASSWORD as string,
+          });
 
-        process.env.JWT_TOKEN = newToken;
-        jwtToken = newToken;
-        const response: any = await this.exportMergedAttendanceReport(data);
-        return response;
+          process.env.JWT_TOKEN = newToken;
+          jwtToken = newToken;
+          // Retry the entire operation with new token
+          const response: any = await this.exportMergedAttendanceReport(data);
+          return response;
+        } catch (retryError: any) {
+          console.error("❌ Retry failed after token refresh:", retryError);
+          throw retryError;
+        }
+      } else {
+        throw error;
       }
     }
   };
@@ -1029,102 +1136,107 @@ function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-const getTotalWorkTimeFromSheet = (
+const getMinutesDifference = (startMoment: moment.Moment, endMoment: moment.Moment): number => {
+  const startTotalMinutes = startMoment.hours() * 60 + startMoment.minutes();
+  const endTotalMinutes = endMoment.hours() * 60 + endMoment.minutes();
+  let diff = endTotalMinutes - startTotalMinutes;
+  return diff < 0 ? diff + 24 * 60 : diff;
+};
+
+const getTotalWorkTimeFromBiotimeAPI = async (
   userId: string,
-  name: string,
   date: string,
-  checkOutTime: string
-): string => {
+  deviceUrl: string,
+  jwtToken: string
+): Promise<string> => {
   try {
-    if (!fs.existsSync(filePath)) return "";
+    const dateMoment = moment(date, "MMMM DD, YYYY");
+    if (!dateMoment.isValid()) {
+      return "";
+    }
 
-    const workbook = XLSX.readFile(filePath);
-    const worksheet = workbook.Sheets[sheetName];
-    if (!worksheet) return "";
+    const startTime = dateMoment.clone().startOf("day").format("YYYY-MM-DD HH:mm:ss");
+    const endTime = dateMoment.clone().endOf("day").format("YYYY-MM-DD HH:mm:ss");
 
-    const headers = [
-      "Name",
-      "UserID",
-      "Date",
-      "checkIn",
-      "checkOut",
-      "breakIn",
-      "breakOut",
-      "breakIn2",
-      "breakOut2",
-      "breakIn3",
-      "breakOut3",
-      "WFH Start 1",
-      "WFH End 1",
-      "WFH Start 2",
-      "WFH End 2",
-      "WFH Start 3",
-      "WFH End 3",
-      "WFH Start 4",
-      "WFH End 4",
-      "Total_Hour",
-      "Source",
-      "Project",
-    ];
+    const response = await axios.get(
+      `${deviceUrl}iclock/api/transactions/?start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&page_size=1000&emp_code=${userId}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `JWT ${jwtToken}`,
+        },
+      }
+    );
 
-    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
-    const existingRows = data.slice(1);
+    const punches = response.data?.data;
+    if (!Array.isArray(punches) || punches.length === 0) {
+      return "";
+    }
 
-    const row = existingRows.find((row) => {
-      const matchByUserId =
-        userId && row[1] === userId && row[2] === date;
-      const matchByName =
-        !userId && row[0] === name && row[2] === date;
-      return matchByUserId || matchByName;
-    });
+    punches.sort((a: any, b: any) => 
+      moment(a.punch_time, "YYYY-MM-DD HH:mm:ss").valueOf() - 
+      moment(b.punch_time, "YYYY-MM-DD HH:mm:ss").valueOf()
+    );
 
-    if (!row) return "";
+    // Find check-in and check-out punches
+    let checkInPunch: any = null;
+    let lastCheckOut: any = null;
 
-    const checkInIdx = headers.indexOf("checkIn");
-    const checkOutIdx = headers.indexOf("checkOut");
-    const breakIns = [
-      headers.indexOf("breakIn"),
-      headers.indexOf("breakIn2"),
-      headers.indexOf("breakIn3"),
-    ];
-    const breakOuts = [
-      headers.indexOf("breakOut"),
-      headers.indexOf("breakOut2"),
-      headers.indexOf("breakOut3"),
-    ];
-
-    const checkIn = row[checkInIdx];
-    // Always use the provided checkOutTime (current checkout being processed)
-    const checkOut = checkOutTime || row[checkOutIdx];
-
-    if (!checkIn || !checkOut) return "";
-
-    const checkInMin = parseTime(checkIn);
-    const checkOutMin = parseTime(checkOut);
-
-    if (checkInMin === 0 || checkOutMin === 0) return "";
-
-    // Calculate total break time
-    let breakMin = 0;
-    for (let i = 0; i < breakIns.length; i++) {
-      const breakIn = row[breakIns[i]];
-      const breakOut = row[breakOuts[i]];
-      if (breakIn && breakOut) {
-        const breakInMin = parseTime(breakIn);
-        const breakOutMin = parseTime(breakOut);
-        if (breakInMin > 0 && breakOutMin > 0) {
-          breakMin += breakOutMin - breakInMin;
-        }
+    for (const punch of punches) {
+      const status = punch.punch_state_display?.toLowerCase() || "";
+      if (status.includes("check in") && !checkInPunch) {
+        checkInPunch = punch;
       }
     }
 
-    // Calculate total work time: (checkOut - checkIn) - breakTime
-    const totalWorkMin = checkOutMin - checkInMin - breakMin;
-    if (totalWorkMin < 0) return "";
+    for (let i = punches.length - 1; i >= 0; i--) {
+      const status = punches[i].punch_state_display?.toLowerCase() || "";
+      if (status.includes("check out")) {
+        lastCheckOut = punches[i];
+        break;
+      }
+    }
 
-    return toHHMM(totalWorkMin);
-  } catch (error) {
-    console.error("Error calculating total work time:", error);
+    if (!checkInPunch || !lastCheckOut) {
+      return "";
+    }
+
+    const checkInMoment = moment(checkInPunch.punch_time, "YYYY-MM-DD HH:mm:ss");
+    const checkOutMoment = moment(lastCheckOut.punch_time, "YYYY-MM-DD HH:mm:ss");
+    
+    if (!checkInMoment.isValid() || !checkOutMoment.isValid()) {
+      return "";
+    }
+
+    // Calculate break time
+    let totalBreakMinutes = 0;
+    let breakStart: moment.Moment | null = null;
+
+    for (const punch of punches) {
+      const status = punch.punch_state_display?.toLowerCase() || "";
+      const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
+
+      if (status.includes("break start")) {
+        breakStart = punchMoment;
+      } else if (status.includes("break end") && breakStart) {
+        const breakDuration = getMinutesDifference(breakStart, punchMoment);
+        if (breakDuration > 0) {
+          totalBreakMinutes += breakDuration;
+        }
+        breakStart = null;
+      }
+    }
+
+    // Calculate work time
+    const totalDurationMinutes = getMinutesDifference(checkInMoment, checkOutMoment);
+    const totalWorkMinutes = totalDurationMinutes - totalBreakMinutes;
+
+    if (totalWorkMinutes < 0) {
+      return "";
+    }
+
+    return toHHMM(totalWorkMinutes);
+  } catch (error: any) {
     return "";
   }
 };
