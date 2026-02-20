@@ -732,6 +732,18 @@ export class TransactionService {
           "Office Work Time": "",
           "Clockify Check In": "",
           "Clockify Check Out": "",
+          "Clockify 1 Check In": "",
+          "Clockify 1 Check Out": "",
+          "Clockify 2 Check In": "",
+          "Clockify 2 Check Out": "",
+          "Clockify 3 Check In": "",
+          "Clockify 3 Check Out": "",
+          "Clockify 4 Check In": "",
+          "Clockify 4 Check Out": "",
+          "Clockify 5 Check In": "",
+          "Clockify 5 Check Out": "",
+          "Clockify 6 Check In": "",
+          "Clockify 6 Check Out": "",
           "Clockify Worked Hours": "",
           "Total Work Time": "",
         };
@@ -791,32 +803,42 @@ export class TransactionService {
 
         for (const date in groupedByDate) {
           const dayEntries = groupedByDate[date];
-          const startTimes = dayEntries.map(
-            (e) => new Date(e.timeInterval.start)
-          );
-          const endTimes = dayEntries.map((e) => new Date(e.timeInterval.end));
-
-          const checkIn = new Date(
-            Math.min(...startTimes.map((d) => d.getTime()))
-          );
-          const checkOut = new Date(
-            Math.max(...endTimes.map((d) => d.getTime()))
+          // Sort by start time so sessions are in order
+          dayEntries.sort(
+            (a: any, b: any) =>
+              new Date(a.timeInterval.start).getTime() -
+              new Date(b.timeInterval.start).getTime()
           );
 
-          // ✅ CORRECT: Total span between check-in and check-out
-          const durationMs = checkOut.getTime() - checkIn.getTime();
+          // Sum actual worked time from each entry (handles multiple check-in/check-out)
+          let totalDurationMs = 0;
+          const sessions: { checkIn: string; checkOut: string }[] = [];
+          for (const entry of dayEntries) {
+            const start = new Date(entry.timeInterval.start);
+            const end = new Date(entry.timeInterval.end);
+            const entryDurationMs = end.getTime() - start.getTime();
+            totalDurationMs += entryDurationMs;
+            sessions.push({
+              checkIn: start.toLocaleTimeString(),
+              checkOut: end.toLocaleTimeString(),
+            });
+          }
 
-          const h = Math.floor(durationMs / (1000 * 60 * 60));
-          const m = Math.floor((durationMs / (1000 * 60)) % 60);
+          const firstCheckIn = sessions[0]?.checkIn ?? "";
+          const lastCheckOut = sessions[sessions.length - 1]?.checkOut ?? "";
+          const totalMin = Math.floor(totalDurationMs / (1000 * 60));
+          const h = Math.floor(totalMin / 60);
+          const m = totalMin % 60;
 
           const name = user.name.trim();
           const key = `${name}_${date}`;
 
           clockifyMap.set(key, {
-            checkIn: checkIn.toLocaleTimeString(),
-            checkOut: checkOut.toLocaleTimeString(),
+            checkIn: firstCheckIn,
+            checkOut: lastCheckOut,
             worked: `${h}h ${m}m`,
-            ClockifyMinutes: Math.floor(durationMs / (1000 * 60)), // for total work time
+            ClockifyMinutes: totalMin,
+            sessions,
           });
         }
       }
@@ -834,6 +856,12 @@ export class TransactionService {
           row["Clockify Check Out"] = clockify.checkOut;
           row["Clockify Worked Hours"] = clockify.worked;
           clockifyMin = clockify.ClockifyMinutes;
+          const sessions = clockify.sessions ?? [];
+          for (let i = 0; i < 6 && i < sessions.length; i++) {
+            const n = i + 1;
+            row[`Clockify ${n} Check In`] = sessions[i].checkIn;
+            row[`Clockify ${n} Check Out`] = sessions[i].checkOut;
+          }
         }
 
         const totalMin = officeMin + clockifyMin;
@@ -852,8 +880,8 @@ export class TransactionService {
 
         if (!alreadyExists) {
           const totalMin = cData.ClockifyMinutes;
-
-          finalRows.push({
+          const sessions = cData.sessions ?? [];
+          const unmatchedRow: any = {
             "Employee Code": "",
             Name: name,
             Date: date,
@@ -871,12 +899,30 @@ export class TransactionService {
             "Office Work Time": "",
             "Clockify Check In": cData.checkIn,
             "Clockify Check Out": cData.checkOut,
+            "Clockify 1 Check In": "",
+            "Clockify 1 Check Out": "",
+            "Clockify 2 Check In": "",
+            "Clockify 2 Check Out": "",
+            "Clockify 3 Check In": "",
+            "Clockify 3 Check Out": "",
+            "Clockify 4 Check In": "",
+            "Clockify 4 Check Out": "",
+            "Clockify 5 Check In": "",
+            "Clockify 5 Check Out": "",
+            "Clockify 6 Check In": "",
+            "Clockify 6 Check Out": "",
             "Clockify Worked Hours": cData.worked,
             "Total Work Time": `${String(Math.floor(totalMin / 60)).padStart(
               2,
               "0"
             )}:${String(totalMin % 60).padStart(2, "0")}`,
-          });
+          };
+          for (let i = 0; i < 6 && i < sessions.length; i++) {
+            const n = i + 1;
+            unmatchedRow[`Clockify ${n} Check In`] = sessions[i].checkIn;
+            unmatchedRow[`Clockify ${n} Check Out`] = sessions[i].checkOut;
+          }
+          finalRows.push(unmatchedRow);
         }
       }
 
