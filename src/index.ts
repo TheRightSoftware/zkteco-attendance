@@ -83,10 +83,10 @@ const safeGetClockify = async () => {
     });
 
     await safeFetchTransactions();
-    await safeGetClockify();
+    // await safeGetClockify();
 
     setInterval(safeFetchTransactions, 60000);
-    setInterval(safeGetClockify, 20000);
+    // setInterval(safeGetClockify, 20000);
     
     console.log("✅ All jobs scheduled\n");
   } catch (error) {
