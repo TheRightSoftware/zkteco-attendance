@@ -786,12 +786,20 @@ export class TransactionService {
       const unmatchedClockifyRows: any[] = [];
 
       for (const user of users) {
-        const res = await clockify.get(
-          `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
-          { params: { start, end: formattedEndDate } }
-        );
+        let page = 1;
+        const pageSize = 1000;
+        let entries: any[] = [];
+        do {
+          const res = await clockify.get(
+            `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
+            { params: { start, end: formattedEndDate, page, "page-size": pageSize } }
+          );
+          const pageEntries = res.data || [];
+          entries = entries.concat(pageEntries);
+          if (pageEntries.length < pageSize) break;
+          page++;
+        } while (true);
 
-        const entries = res.data;
         if (!entries.length) continue;
 
         const groupedByDate: Record<string, any[]> = {};
