@@ -744,6 +744,10 @@ export class TransactionService {
           "Clockify 5 Check Out": "",
           "Clockify 6 Check In": "",
           "Clockify 6 Check Out": "",
+          "Clockify 7 Check In": "",
+          "Clockify 7 Check Out": "",
+          "Clockify 8 Check In": "",
+          "Clockify 8 Check Out": "",
           "Clockify Worked Hours": "",
           "Total Work Time": "",
         };
@@ -865,7 +869,7 @@ export class TransactionService {
           row["Clockify Worked Hours"] = clockify.worked;
           clockifyMin = clockify.ClockifyMinutes;
           const sessions = clockify.sessions ?? [];
-          for (let i = 0; i < 6 && i < sessions.length; i++) {
+          for (let i = 0; i < 8 && i < sessions.length; i++) {
             const n = i + 1;
             row[`Clockify ${n} Check In`] = sessions[i].checkIn;
             row[`Clockify ${n} Check Out`] = sessions[i].checkOut;
@@ -919,13 +923,17 @@ export class TransactionService {
             "Clockify 5 Check Out": "",
             "Clockify 6 Check In": "",
             "Clockify 6 Check Out": "",
+            "Clockify 7 Check In": "",
+            "Clockify 7 Check Out": "",
+            "Clockify 8 Check In": "",
+            "Clockify 8 Check Out": "",
             "Clockify Worked Hours": cData.worked,
             "Total Work Time": `${String(Math.floor(totalMin / 60)).padStart(
               2,
               "0"
             )}:${String(totalMin % 60).padStart(2, "0")}`,
           };
-          for (let i = 0; i < 6 && i < sessions.length; i++) {
+          for (let i = 0; i < 8 && i < sessions.length; i++) {
             const n = i + 1;
             unmatchedRow[`Clockify ${n} Check In`] = sessions[i].checkIn;
             unmatchedRow[`Clockify ${n} Check Out`] = sessions[i].checkOut;
