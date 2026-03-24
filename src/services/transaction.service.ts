@@ -953,7 +953,10 @@ export class TransactionService {
       // XLSX.writeFile(workbook, filePath);
 
       // ➕ Weekly & Monthly Summary Sheets
-      const groupBy = (rows: any[], granularity: "week" | "month") => {
+      const groupBy = (
+        rows: any[],
+        granularity: "week" | "month" | "period"
+      ) => {
         const map: Record<string, any> = {};
         const givenStart = moment(start, "YYYY-MM-DD").startOf("day"); // the user-provided start
 
@@ -964,7 +967,9 @@ export class TransactionService {
           const date = moment(row.Date, "YYYY-MM-DD").startOf("day");
 
           let key: string;
-          if (granularity === "week") {
+          if (granularity === "period") {
+            key = "Full Period Summary";
+          } else if (granularity === "week") {
             if (date.isBetween(givenStart, firstWeekEnd, "day", "[]")) {
               // falls in the initial partial/full week from givenStart to the first Sunday
               key = `week-${givenStart.format(
@@ -1025,6 +1030,7 @@ export class TransactionService {
 
       const weekly = groupBy(cleanRows, "week");
       const monthly = groupBy(cleanRows, "month");
+      const fullPeriod = groupBy(cleanRows, "period");
 
       const formatSummary = (group: Record<string, any>) =>
         Object.entries(group).map(([sheetName, users]) => {
@@ -1043,13 +1049,15 @@ export class TransactionService {
           return { sheetName, rows };
         });
 
-      // ➕ Append sheets to Excel
-      [...formatSummary(weekly), ...formatSummary(monthly)].forEach(
-        ({ sheetName, rows }) => {
-          const sheet = XLSX.utils.json_to_sheet(rows);
-          XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
-        }
-      );
+      // ➕ Append sheets to Excel (weekly, monthly, then one sheet for whole date range)
+      [
+        ...formatSummary(weekly),
+        ...formatSummary(monthly),
+        ...formatSummary(fullPeriod),
+      ].forEach(({ sheetName, rows }) => {
+        const sheet = XLSX.utils.json_to_sheet(rows);
+        XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+      });
 
       const fileName = `attendance-merged-${startDate}_to_${endDate}.xlsx`;
       // const filePath = path.join(process.cwd(), fileName);
