@@ -17,6 +17,25 @@ const logger = winston.createLogger({
   ],
 });
 
+/** Rocket.Chat `roomId` is a server room id; @user / #room must use `channel`. */
+const postMessageTarget = (
+  target: string
+): { channel?: string; roomId?: string } => {
+  const t = target.trim();
+  if (!t) {
+    throw new Error("Rocket.Chat target (CHANNEL_NAME) is missing or empty");
+  }
+
+  if (t.startsWith("@") || t.startsWith("#")) {
+    return { channel: t };
+  }
+  // Typical Rocket.Chat rid (e.g. jK9ARWic28jeHGF4Z) — not a display name
+  if (/^[a-zA-Z0-9]{17}$/.test(t)) {
+    return { roomId: t };
+  }
+  return { channel: `@${t}` };
+};
+
 export const sendMessage = async (
   firstName: string,
   punchTime: string,
@@ -27,6 +46,7 @@ export const sendMessage = async (
   user_Id?: string,
   maxRetries = 3,
   delayMs = 1000,
+  roomIdOverride?: string,
 ) => {
   const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
   const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
@@ -47,9 +67,10 @@ export const sendMessage = async (
     try {
       logger.info(`💬 Attempt ${attempt + 1}: ${message} - ${punchTime}`);
 
+      const target = (roomIdOverride ?? process.env.CHANNEL_NAME) as string;
       const payload: any = {
-        roomId: process.env.CHANNEL_NAME as string,
         text: message,
+        ...postMessageTarget(target),
       };
 
       const res = await axios.post(

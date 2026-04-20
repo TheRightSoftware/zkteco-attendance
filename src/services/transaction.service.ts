@@ -82,6 +82,9 @@ export class TransactionService {
         const fullName = punch.last_name ? `${punch.first_name} ${punch.last_name}` : punch.first_name;
         const userId = String(punch.emp_code);
         const status = punch.punch_state_display?.toLowerCase();
+        console.log("------------------punch data", punch);
+        console.log("Status data", status);
+        console.log("------------------");
 
         const entry = {
           Name: fullName,
@@ -114,6 +117,8 @@ export class TransactionService {
         
         try {
           await waitForRateLimit();
+          const washroomOnlyChannel =
+            process.env.WASHROOM_CHANNEL_NAME || "@G.jiallani";
           await sendMessage(
             `${fullName} (${userId})`,
             punch.punch_time,
@@ -121,7 +126,12 @@ export class TransactionService {
             undefined,
             false,
             rocketChatUsername,
-            String(userId)
+            String(userId),
+            3,
+            1000,
+            (status ?? "").includes("washroom")
+              ? washroomOnlyChannel
+              : undefined
           );
           
           markAsProcessed(uniqueKey);
@@ -410,15 +420,17 @@ export class TransactionService {
     const deviceUrl = process.env.DEVICE_URL as string;
     const jwtToken = process.env.JWT_TOKEN as string;
 
-    const start_date = "2025-11-01";
-    const end_date = "2025-11-21";
+    const start_date = "2026-04-17";
+    const end_date = "2026-04-21";
 
     let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
       start_date
-    )}&end_date=${encodeURIComponent(end_date)}&page_size=500`;
+    )}&end_date=${encodeURIComponent(end_date)}&page_size=1241`;
+    // http://192.168.0.160/att/api/transactionReport/?start_date=2026-04-17&end_date=2026-04-21&page_size=124
+    console.log("url", url);
     // let url =
-    //   `${deviceUrl}iclock/api/transactions/?end_time=2025-11-30&page=1&limit=10000&start_time=2025-11-01`;
-
+    //   `${deviceUrl}iclock/api/transactions/?end_time=2026-04-21&page=1&limit=10000&start_time=2026-04-17&page_size=50`;
+    console.log("url", url);
     let allRecords: any[] = [];
     const res = await axios.get(url, {
       headers: {
@@ -729,6 +741,23 @@ export class TransactionService {
           "Break 4 Start": "",
           "Break 4 End": "",
           "Total Break Time": "",
+          "Washroom 1 Start": "",
+          "Washroom 1 End": "",
+          "Washroom 2 Start": "",
+          "Washroom 2 End": "",
+          "Washroom 3 Start": "",
+          "Washroom 3 End": "",
+          "Washroom 4 Start": "",
+          "Washroom 4 End": "",
+          "Washroom 5 Start": "",
+          "Washroom 5 End": "",
+          "Washroom 6 Start": "",
+          "Washroom 6 End": "",
+          "Washroom 7 Start": "",
+          "Washroom 7 End": "",
+          "Washroom 8 Start": "",
+          "Washroom 8 End": "",
+          "Total Washroom Time": "",
           "Office Work Time": "",
           "Clockify Check In": "",
           "Clockify Check Out": "",
@@ -752,11 +781,54 @@ export class TransactionService {
           "Total Work Time": "",
         };
 
-        const breaks = times.slice(1, times.length - 1);
-        for (let i = 0; i < breaks.length && i < 8; i += 2) {
-          const bNum = Math.floor(i / 2) + 1;
-          row[`Break ${bNum} Start`] = breaks[i];
-          row[`Break ${bNum} End`] = breaks[i + 1] ?? "";
+        const breakStarts: string[] = [];
+        const breakEnds: string[] = [];
+        const washroomStarts: string[] = [];
+        const washroomEnds: string[] = [];
+        let firstCheckIn = "";
+        let lastCheckOut = "";
+
+        const normalizeStatus = (value: any): string =>
+          String(value || "")
+            .toLowerCase()
+            .trim()
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ");
+
+        for (const record of records) {
+          const status = normalizeStatus(
+            record.punch_state ??
+              record.punch_state_display ??
+              record.work_code_alias ??
+              ""
+          );
+          const punchTime = record.punch_time;
+
+          if (status.includes("check in") && !firstCheckIn) {
+            firstCheckIn = punchTime;
+          } else if (status.includes("check out")) {
+            lastCheckOut = punchTime;
+          } else if (status.includes("break start") || status.includes("break in")) {
+            breakStarts.push(punchTime);
+          } else if (status.includes("break end") || status.includes("break out")) {
+            breakEnds.push(punchTime);
+          } else if (status.includes("washroom in") || status.includes("washroom start")) {
+            washroomStarts.push(punchTime);
+          } else if (status.includes("washroom out") || status.includes("washroom end")) {
+            washroomEnds.push(punchTime);
+          }
+        }
+
+        row["Check In"] = firstCheckIn || times[0];
+        row["Check Out"] = lastCheckOut || times[times.length - 1];
+
+        for (let i = 0; i < 4; i++) {
+          row[`Break ${i + 1} Start`] = breakStarts[i] ?? "";
+          row[`Break ${i + 1} End`] = breakEnds[i] ?? "";
+        }
+        for (let i = 0; i < 8; i++) {
+          row[`Washroom ${i + 1} Start`] = washroomStarts[i] ?? "";
+          row[`Washroom ${i + 1} End`] = washroomEnds[i] ?? "";
         }
 
         const toMinutes = (t: string) => {
@@ -776,8 +848,18 @@ export class TransactionService {
           }
         }
 
-        const officeWorkedMin = checkOutMin - checkInMin - breakMin;
+        let washroomMin = 0;
+        for (let i = 1; i <= 8; i++) {
+          const wStart = row[`Washroom ${i} Start`];
+          const wEnd = row[`Washroom ${i} End`];
+          if (wStart && wEnd) {
+            washroomMin += toMinutes(wEnd) - toMinutes(wStart);
+          }
+        }
+
+        const officeWorkedMin = checkOutMin - checkInMin - breakMin - washroomMin;
         row["Total Break Time"] = toHHMM(breakMin);
+        row["Total Washroom Time"] = toHHMM(washroomMin);
         row["Office Work Time"] = toHHMM(officeWorkedMin);
         row["OfficeWorkMinutes"] = officeWorkedMin;
 
@@ -908,6 +990,23 @@ export class TransactionService {
             "Break 4 Start": "",
             "Break 4 End": "",
             "Total Break Time": "",
+            "Washroom 1 Start": "",
+            "Washroom 1 End": "",
+            "Washroom 2 Start": "",
+            "Washroom 2 End": "",
+            "Washroom 3 Start": "",
+            "Washroom 3 End": "",
+            "Washroom 4 Start": "",
+            "Washroom 4 End": "",
+            "Washroom 5 Start": "",
+            "Washroom 5 End": "",
+            "Washroom 6 Start": "",
+            "Washroom 6 End": "",
+            "Washroom 7 Start": "",
+            "Washroom 7 End": "",
+            "Washroom 8 Start": "",
+            "Washroom 8 End": "",
+            "Total Washroom Time": "",
             "Office Work Time": "",
             "Clockify Check In": cData.checkIn,
             "Clockify Check Out": cData.checkOut,
@@ -995,6 +1094,7 @@ export class TransactionService {
               Name: row.Name?.trim(),
               "Total Office Work Minutes": 0,
               "Total Break Minutes": 0,
+              "Total Washroom Minutes": 0,
               "Total Clockify Minutes": 0,
               "Total Work Minutes": 0,
             };
@@ -1019,6 +1119,7 @@ export class TransactionService {
             row["Office Work Time"]
           );
           user["Total Break Minutes"] += toMinutes(row["Total Break Time"]);
+          user["Total Washroom Minutes"] += toMinutes(row["Total Washroom Time"]);
           user["Total Clockify Minutes"] += toMinutes(
             row["Clockify Worked Hours"]
           );
@@ -1041,6 +1142,7 @@ export class TransactionService {
                 user["Total Office Work Minutes"]
               ),
               "Total Break Time": toHHMM(user["Total Break Minutes"]),
+              "Total Washroom Time": toHHMM(user["Total Washroom Minutes"]),
               "Total Clockify Time": toHHMM(user["Total Clockify Minutes"]),
               "Total Work Time": toHHMM(user["Total Work Minutes"]),
             };
@@ -1213,6 +1315,55 @@ const getMinutesDifference = (startMoment: moment.Moment, endMoment: moment.Mome
   return diff < 0 ? diff + 24 * 60 : diff;
 };
 
+const getTotalPairedDurationMinutes = (
+  punches: any[],
+  startMatchers: string[],
+  endMatchers: string[],
+  label: string = "duration"
+): number => {
+  let totalMinutes = 0;
+  let currentStart: moment.Moment | null = null;
+
+  for (const punch of punches) {
+    const status = punch.punch_state_display?.toLowerCase() || "";
+    const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
+    if (!punchMoment.isValid()) continue;
+
+    const isStart = startMatchers.some((matcher) => status.includes(matcher));
+    const isEnd = endMatchers.some((matcher) => status.includes(matcher));
+
+    if (isStart) {
+      currentStart = punchMoment;
+      console.log(
+        `[${label}] start: ${punch.punch_state_display} @ ${punchMoment.format(
+          "YYYY-MM-DD HH:mm:ss"
+        )}`
+      );
+      continue;
+    }
+
+    if (isEnd && currentStart) {
+      const duration = getMinutesDifference(currentStart, punchMoment);
+      if (duration > 0) {
+        totalMinutes += duration;
+      }
+      console.log(
+        `[${label}] end: ${punch.punch_state_display} @ ${punchMoment.format(
+          "YYYY-MM-DD HH:mm:ss"
+        )} | pair=${duration} min | total=${totalMinutes} min`
+      );
+      currentStart = null;
+    }
+  }
+
+  console.log(
+    `[${label}] final total paired minutes: ${totalMinutes} | startMatchers=${startMatchers.join(
+      ", "
+    )} | endMatchers=${endMatchers.join(", ")}`
+  );
+  return totalMinutes;
+};
+
 const getTotalWorkTimeFromBiotimeAPI = async (
   userId: string,
   date: string,
@@ -1278,28 +1429,31 @@ const getTotalWorkTimeFromBiotimeAPI = async (
       return "";
     }
 
-    // Calculate break time
-    let totalBreakMinutes = 0;
-    let breakStart: moment.Moment | null = null;
-
-    for (const punch of punches) {
-      const status = punch.punch_state_display?.toLowerCase() || "";
-      const punchMoment = moment(punch.punch_time, "YYYY-MM-DD HH:mm:ss");
-
-      if (status.includes("break start")) {
-        breakStart = punchMoment;
-      } else if (status.includes("break end") && breakStart) {
-        const breakDuration = getMinutesDifference(breakStart, punchMoment);
-        if (breakDuration > 0) {
-          totalBreakMinutes += breakDuration;
-        }
-        breakStart = null;
-      }
-    }
+    const totalBreakMinutes = getTotalPairedDurationMinutes(
+      punches,
+      ["break start"],
+      ["break end"],
+      "break"
+    );
+    const totalWashroomMinutes = getTotalPairedDurationMinutes(
+      punches,
+      ["washroom in", "washroom start"],
+      ["washroom out", "washroom end"],
+      "washroom"
+    );
 
     // Calculate work time
     const totalDurationMinutes = getMinutesDifference(checkInMoment, checkOutMoment);
-    const totalWorkMinutes = totalDurationMinutes - totalBreakMinutes;
+    const totalWorkMinutes =
+      totalDurationMinutes - totalBreakMinutes - totalWashroomMinutes;
+
+    console.log(
+      `[worktime] check-in=${checkInMoment.format(
+        "YYYY-MM-DD HH:mm:ss"
+      )} | check-out=${checkOutMoment.format(
+        "YYYY-MM-DD HH:mm:ss"
+      )} | gross=${totalDurationMinutes} min | break=${totalBreakMinutes} min | washroom=${totalWashroomMinutes} min | net=${totalWorkMinutes} min`
+    );
 
     if (totalWorkMinutes < 0) {
       return "";
@@ -1327,6 +1481,22 @@ export const upsertToAttendanceSheet = async (entry: any) => {
     "breakOut2",
     "breakIn3",
     "breakOut3",
+    "washroomIn1",
+    "washroomOut1",
+    "washroomIn2",
+    "washroomOut2",
+    "washroomIn3",
+    "washroomOut3",
+    "washroomIn4",
+    "washroomOut4",
+    "washroomIn5",
+    "washroomOut5",
+    "washroomIn6",
+    "washroomOut6",
+    "washroomIn7",
+    "washroomOut7",
+    "washroomIn8",
+    "washroomOut8",
     "WFH Start 1",
     "WFH End 1",
     "WFH Start 2",
@@ -1353,7 +1523,28 @@ export const upsertToAttendanceSheet = async (entry: any) => {
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
   }
 
-  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+  const rawData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+  const currentHeaders = (rawData[0] || []).map((h) => String(h || ""));
+  const currentHeaderIndex = new Map<string, number>();
+  currentHeaders.forEach((header, index) => {
+    if (header && !currentHeaderIndex.has(header)) {
+      currentHeaderIndex.set(header, index);
+    }
+  });
+
+  // Normalize existing sheet to current header schema so new washroom columns are persisted.
+  const data: string[][] = [headers];
+  for (let i = 1; i < rawData.length; i++) {
+    const sourceRow = rawData[i] || [];
+    const normalizedRow = headers.map((header) => {
+      const oldIndex = currentHeaderIndex.get(header);
+      if (oldIndex === undefined) return "";
+      const value = sourceRow[oldIndex];
+      return value === undefined || value === null ? "" : String(value);
+    });
+    data.push(normalizedRow);
+  }
+
   const existingRows = data.slice(1); // skip headers
 
   const rowIndex = existingRows.findIndex((row) => {
@@ -1386,6 +1577,26 @@ export const upsertToAttendanceSheet = async (entry: any) => {
       headers.indexOf("breakOut2"),
       headers.indexOf("breakOut3"),
     ];
+    const washroomIns = [
+      headers.indexOf("washroomIn1"),
+      headers.indexOf("washroomIn2"),
+      headers.indexOf("washroomIn3"),
+      headers.indexOf("washroomIn4"),
+      headers.indexOf("washroomIn5"),
+      headers.indexOf("washroomIn6"),
+      headers.indexOf("washroomIn7"),
+      headers.indexOf("washroomIn8"),
+    ];
+    const washroomOuts = [
+      headers.indexOf("washroomOut1"),
+      headers.indexOf("washroomOut2"),
+      headers.indexOf("washroomOut3"),
+      headers.indexOf("washroomOut4"),
+      headers.indexOf("washroomOut5"),
+      headers.indexOf("washroomOut6"),
+      headers.indexOf("washroomOut7"),
+      headers.indexOf("washroomOut8"),
+    ];
 
     const checkIn = row[checkInIdx];
     const checkOut = row[checkOutIdx];
@@ -1411,8 +1622,21 @@ export const upsertToAttendanceSheet = async (entry: any) => {
       }
     }
 
-    // Calculate total work time: (checkOut - checkIn) - breakTime
-    const totalWorkMin = checkOutMin - checkInMin - breakMin;
+    let washroomMin = 0;
+    for (let i = 0; i < washroomIns.length; i++) {
+      const washroomIn = row[washroomIns[i]];
+      const washroomOut = row[washroomOuts[i]];
+      if (washroomIn && washroomOut) {
+        const washroomInMin = parseTime(washroomIn);
+        const washroomOutMin = parseTime(washroomOut);
+        if (washroomInMin > 0 && washroomOutMin > 0) {
+          washroomMin += washroomOutMin - washroomInMin;
+        }
+      }
+    }
+
+    // Calculate total work time: (checkOut - checkIn) - breakTime - washroomTime
+    const totalWorkMin = checkOutMin - checkInMin - breakMin - washroomMin;
     if (totalWorkMin < 0) return ""; // Invalid calculation
 
     return toHHMM(totalWorkMin);
@@ -1457,6 +1681,26 @@ export const upsertToAttendanceSheet = async (entry: any) => {
         headers.indexOf("breakOut2"),
         headers.indexOf("breakOut3"),
       ];
+      const washroomIns = [
+        headers.indexOf("washroomIn1"),
+        headers.indexOf("washroomIn2"),
+        headers.indexOf("washroomIn3"),
+        headers.indexOf("washroomIn4"),
+        headers.indexOf("washroomIn5"),
+        headers.indexOf("washroomIn6"),
+        headers.indexOf("washroomIn7"),
+        headers.indexOf("washroomIn8"),
+      ];
+      const washroomOuts = [
+        headers.indexOf("washroomOut1"),
+        headers.indexOf("washroomOut2"),
+        headers.indexOf("washroomOut3"),
+        headers.indexOf("washroomOut4"),
+        headers.indexOf("washroomOut5"),
+        headers.indexOf("washroomOut6"),
+        headers.indexOf("washroomOut7"),
+        headers.indexOf("washroomOut8"),
+      ];
 
       const lowerStatus = status.toLowerCase();
 
@@ -1485,6 +1729,35 @@ export const upsertToAttendanceSheet = async (entry: any) => {
           }
         }
         // Recalculate total work time when break ends (in case checkout already happened)
+        const checkOutIdx = headers.indexOf("checkOut");
+        if (row[checkOutIdx]) {
+          const totalHourIdx = headers.indexOf("Total_Hour");
+          const totalWorkTime = calculateTotalWorkTime(row);
+          if (totalWorkTime) {
+            row[totalHourIdx] = totalWorkTime;
+          }
+        }
+      } else if (lowerStatus.includes("washroom in")) {
+        for (const idx of washroomIns) {
+          if (!row[idx]) {
+            row[idx] = formattedTime;
+            console.log(
+              `[sheet] washroom in saved: ${entry.Name} ${entry.Date} -> ${headers[idx]}=${formattedTime}`
+            );
+            break;
+          }
+        }
+      } else if (lowerStatus.includes("washroom out")) {
+        for (const idx of washroomOuts) {
+          if (!row[idx]) {
+            row[idx] = formattedTime;
+            console.log(
+              `[sheet] washroom out saved: ${entry.Name} ${entry.Date} -> ${headers[idx]}=${formattedTime}`
+            );
+            break;
+          }
+        }
+        // Recalculate total work time when washroom ends (in case checkout already happened)
         const checkOutIdx = headers.indexOf("checkOut");
         if (row[checkOutIdx]) {
           const totalHourIdx = headers.indexOf("Total_Hour");
