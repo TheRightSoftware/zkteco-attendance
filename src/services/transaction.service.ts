@@ -427,7 +427,6 @@ export class TransactionService {
       start_date
     )}&end_date=${encodeURIComponent(end_date)}&page_size=1241`;
     // http://192.168.0.160/att/api/transactionReport/?start_date=2026-04-17&end_date=2026-04-21&page_size=124
-    console.log("url", url);
     // let url =
     //   `${deviceUrl}iclock/api/transactions/?end_time=2026-04-21&page=1&limit=10000&start_time=2026-04-17&page_size=50`;
     console.log("url", url);
@@ -562,7 +561,7 @@ export class TransactionService {
   };
 
   public exportMergedAttendanceReport = async (data: any) => {
-    const { start, end } = data;
+    const { start, end, empCode } = data;
     console.log("🔴 start:", start);
 
     const startDate = new Date(start).toISOString().split("T")[0];
@@ -703,6 +702,10 @@ export class TransactionService {
           console.error("❌ Error fetching page:", error.message);
           break;
         }
+      }
+
+      if (empCode) {
+        allRecords = allRecords.filter((record: any) => String(record.emp_code) === String(empCode));
       }
 
       if (!allRecords.length) {
@@ -871,7 +874,15 @@ export class TransactionService {
       const clockifyMap = new Map<string, any>();
       const unmatchedClockifyRows: any[] = [];
 
+      const targetNames = new Set(
+        finalRows.map((row) => row.Name?.trim().toLowerCase()).filter(Boolean)
+      );
+
       for (const user of users) {
+        const userNameNormalized = user.name?.trim().toLowerCase();
+        if (empCode && !targetNames.has(userNameNormalized)) {
+          continue;
+        }
         let page = 1;
         const pageSize = 1000;
         let entries: any[] = [];
@@ -1057,7 +1068,7 @@ export class TransactionService {
         granularity: "week" | "month" | "period"
       ) => {
         const map: Record<string, any> = {};
-        const givenStart = moment(start, "YYYY-MM-DD").startOf("day"); // the user-provided start
+        const givenStart = moment(startDate).startOf("day"); // the user-provided start
 
         // First week end: if start is Monday this becomes Sunday of that week; if start is any other day it becomes the upcoming Sunday.
         const firstWeekEnd = givenStart.clone().endOf("isoWeek"); // ISO week: Monday–Sunday
@@ -1158,10 +1169,10 @@ export class TransactionService {
         ...formatSummary(fullPeriod),
       ].forEach(({ sheetName, rows }) => {
         const sheet = XLSX.utils.json_to_sheet(rows);
-        XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+        XLSX.utils.book_append_sheet(workbook, sheet, sheetName.slice(0, 31));
       });
 
-      const fileName = `attendance-merged-${startDate}_to_${endDate}.xlsx`;
+      const fileName = `${startDate}_to_${endDate}.xlsx`;
       // const filePath = path.join(process.cwd(), fileName);
       // XLSX.writeFile(workbook, filePath);
       return { workbook, fileName };
