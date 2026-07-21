@@ -18,12 +18,7 @@ transactionRouter.get("/getRocketChatUsers", (...args: [Request, Response]) =>
 transactionRouter.get("/exportRocketChatUsers", (...args: [Request, Response]) =>
   transactionController.exportRocketChatUsers(...args)
 );
-transactionRouter.get("/getAllUsersAttendance", (...args: [Request, Response]) =>
-  transactionController.getAllUsersAttendance(...args)
-);
-transactionRouter.get("/exportAttendanceReport", (...args: [Request, Response]) =>
-  transactionController.exportAttendanceReport(...args)
-);
+
 transactionRouter.get("/exportMergedAttendanceReport", (...args: [Request, Response]) =>
   transactionController.exportMergedAttendanceReport(...args)
 );

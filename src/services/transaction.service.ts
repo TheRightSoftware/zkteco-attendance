@@ -25,8 +25,55 @@ const processedPunchesFilePath = path.join(
 const sheetName = "Attendance";
 
 var punchSet = new Set<string>();
-let jwtToken = process.env.JWT_TOKEN as string;
 let isSavingCache = false;
+
+const zktecoApi = axios.create({
+  baseURL: process.env.DEVICE_URL,
+  headers: {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  }
+});
+
+// Request Interceptor to append current JWT Token
+zktecoApi.interceptors.request.use((config) => {
+  if (process.env.JWT_TOKEN) {
+    config.headers.Authorization = `JWT ${process.env.JWT_TOKEN}`;
+  }
+  return config;
+}, (error) => Promise.reject(error));
+
+// Response Interceptor to auto-refresh expired token
+zktecoApi.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    const isUnauthorized = error.response?.status === 401 || error.response?.data?.code === "token_not_valid";
+    
+    if (isUnauthorized && !originalRequest._retry) {
+      originalRequest._retry = true;
+      console.warn("🔒 Token expired. Fetching new token in interceptor...");
+      
+      try {
+        const username = process.env.DEVICE_USERNAME as string;
+        const password = process.env.DEVICE_PASSWORD as string;
+        const response = await axios.post(`${process.env.DEVICE_URL}jwt-api-token-auth/`, {
+          username,
+          password
+        });
+        const newToken = response.data.token;
+        if (newToken) {
+          process.env.JWT_TOKEN = newToken;
+          originalRequest.headers.Authorization = `JWT ${newToken}`;
+          return zktecoApi(originalRequest);
+        }
+      } catch (refreshError) {
+        console.error("❌ Token auto-refresh failed:", refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 let employeeNicknameCache = new Map<string, string>();
 
 let lastMessageTime = 0;
@@ -52,9 +99,6 @@ export class TransactionService {
   }
 
   public fetchTransactions = async (): Promise<any> => {
-    const deviceUrl = process.env.DEVICE_URL as string;
-    let jwtToken = process.env.JWT_TOKEN as string;
-
     await loadPunchCache();
     const lastFetchedTime = await getLastFetchedTime();
     const endTime = moment();
@@ -62,10 +106,6 @@ export class TransactionService {
 
     const formattedStart = startTime.format("YYYY-MM-DD HH:mm:ss");
     const formattedEnd = endTime.format("YYYY-MM-DD HH:mm:ss");
-
-    const url = `${deviceUrl}iclock/api/transactions/?start_time=${encodeURIComponent(
-      formattedStart
-    )}&end_time=${encodeURIComponent(formattedEnd)}&page_size=1000`;
 
     const processPunches = async (punches: any[]) => {
       for (const punch of punches) {
@@ -104,11 +144,9 @@ export class TransactionService {
         if (status.includes("check out")) {
           const totalWorkTime = await getTotalWorkTimeFromBiotimeAPI(
             userId,
-            formattedDate,
-            deviceUrl,
-            jwtToken
+            formattedDate
           );
-          rocketChatUsername = await getEmployeeRecord(punch.emp_code, deviceUrl, jwtToken);
+          rocketChatUsername = await getEmployeeRecord(punch.emp_code);
 
           if (totalWorkTime) {
             messageState = `${punch.punch_state_display} | Work Time: ${totalWorkTime}`;
@@ -144,11 +182,12 @@ export class TransactionService {
     };
 
     try {
-      const response = await axios.get(url, {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `JWT ${jwtToken}`,
-        },
+      const response = await zktecoApi.get("iclock/api/transactions/", {
+        params: {
+          start_time: formattedStart,
+          end_time: formattedEnd,
+          page_size: 1000
+        }
       });
 
       const punches = response.data?.data;
@@ -162,38 +201,8 @@ export class TransactionService {
       await savePunchCache();
       return response.data;
     } catch (error: any) {
-      const status = error?.response?.status;
-      if (status === 401 || error?.response?.data?.code === "token_not_valid") {
-        console.warn("🔒 Token expired. Fetching new token...");
-        const newToken = await this.getJWTToken({
-          userName: process.env.DEVICE_USERNAME as string,
-          Password: process.env.DEVICE_PASSWORD as string,
-        });
-        console.log("New token:", newToken);
-
-        process.env.JWT_TOKEN = newToken;
-        jwtToken = newToken;
-
-        const retryResponse = await axios.get(url, {
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `JWT ${jwtToken}`,
-          },
-        });
-
-        const punches = retryResponse.data?.data;
-        if (Array.isArray(punches) && punches.length > 0) {
-          await processPunches(punches);
-        } else {
-          console.log("⚠️ No punches found in retry response.");
-        }
-
-        setLastFetchedTime(endTime);
-        await savePunchCache();
-        return retryResponse.data;
-      } else {
-        throw error;
-      }
+      console.error("❌ Error in fetchTransactions:", error.message || error);
+      throw error;
     }
   };
 
@@ -346,220 +355,6 @@ export class TransactionService {
     return { workbook, fileName };
   };
 
-  // From Zkteco device.
-  public getAllUsersAttendance = async (data: any) => {
-    const { start, end } = data;
-    const users = await getUsers();
-    const attendanceRows: any[] = [];
-
-    for (const user of users) {
-      const res = await clockify.get(
-        `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
-        {
-          params: { start, end },
-        }
-      );
-
-      const entries = res.data;
-      if (!entries.length) continue;
-
-      const groupedByDate: Record<string, any[]> = {};
-
-      entries.forEach((entry: any) => {
-        const date = entry.timeInterval.start.split("T")[0];
-        if (!groupedByDate[date]) groupedByDate[date] = [];
-        groupedByDate[date].push(entry);
-      });
-
-      for (const date in groupedByDate) {
-        const dayEntries = groupedByDate[date];
-
-        const startTimes = dayEntries.map(
-          (e) => new Date(e.timeInterval.start)
-        );
-        const endTimes = dayEntries.map((e) => new Date(e.timeInterval.end));
-
-        const earliestStart = new Date(
-          Math.min(...startTimes.map((d) => d.getTime()))
-        );
-        const latestEnd = new Date(
-          Math.max(...endTimes.map((d) => d.getTime()))
-        );
-
-        const totalDurationMs = endTimes.reduce((sum, end, i) => {
-          return sum + (end.getTime() - startTimes[i].getTime());
-        }, 0);
-
-        const durationHrs = Math.floor(totalDurationMs / (1000 * 60 * 60));
-        const durationMin = Math.floor((totalDurationMs / (1000 * 60)) % 60);
-
-        attendanceRows.push({
-          Name: user.name,
-          Email: user.email,
-          Date: date,
-          "Check In": earliestStart.toLocaleTimeString(),
-          "Check Out": latestEnd.toLocaleTimeString(),
-          "Worked Hours": `${durationHrs}h ${durationMin}m`,
-        });
-      }
-    }
-
-    // Export to Excel
-    const worksheet = XLSX.utils.json_to_sheet(attendanceRows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Attendance");
-
-    const filePath = path.join(__dirname, "attendance-report.xlsx");
-    XLSX.writeFile(workbook, filePath);
-
-    console.log("✅ Attendance report saved to:", filePath);
-  };
-
-  // From Clockify
-  public exportAttendanceReport = async () => {
-    const deviceUrl = process.env.DEVICE_URL as string;
-    const jwtToken = process.env.JWT_TOKEN as string;
-
-    const start_date = "2026-04-17";
-    const end_date = "2026-04-21";
-
-    let url = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
-      start_date
-    )}&end_date=${encodeURIComponent(end_date)}&page_size=1241`;
-    // http://192.168.0.160/att/api/transactionReport/?start_date=2026-04-17&end_date=2026-04-21&page_size=124
-    // let url =
-    //   `${deviceUrl}iclock/api/transactions/?end_time=2026-04-21&page=1&limit=10000&start_time=2026-04-17&page_size=50`;
-    console.log("url", url);
-    let allRecords: any[] = [];
-    const res = await axios.get(url, {
-      headers: {
-        Authorization: `JWT ${jwtToken}`,
-        Accept: "application/json",
-      },
-    });
-    console.log("Response status:", res.status);
-    console.log("Response headers:", res.headers);
-    // return JSON.stringify(res.data);
-
-
-    // Fetch all pages
-    while (url) {
-      console.log("📡 Fetching:", url);
-      const res = await axios.get(url, {
-        headers: {
-          Authorization: `JWT ${jwtToken}`,
-          Accept: "application/json",
-        },
-      });
-
-      const response = res.data?.response || res.data;
-      if (!response?.data || !Array.isArray(response.data)) {
-        console.error("❌ Invalid response structure or missing data.");
-        break;
-      }
-      console.log("response.next", response.next);
-
-      allRecords = allRecords.concat(response.data);
-      url = response.next || null;
-    }
-    // return allRecords;
-
-    if (allRecords.length === 0) {
-      console.log("⚠️ No attendance records found.");
-      return;
-    }
-
-    // Group by emp_code + att_date
-    const grouped: { [key: string]: any[] } = {};
-    for (const record of allRecords) {
-      const key = `${record.emp_code}_${record.att_date}`;
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(record);
-    }
-
-    const finalRows: any[] = [];
-
-    for (const [key, records] of Object.entries(grouped)) {
-      // Sort by punch_time
-      records.sort((a, b) => a.punch_time.localeCompare(b.punch_time));
-
-      const base = records[0];
-      const times = records.map((r) => ({
-        time: r.punch_time,
-        state: r.punch_state,
-      }));
-
-      const row: any = {
-        "Employee Code": base.emp_code,
-        Name: `${base.first_name ?? ""} ${base.last_name ?? ""}`.trim(),
-        Department: base.dept_name,
-        Company: base.company_name,
-        Date: base.att_date,
-        "Check In": "",
-        "Check Out": "",
-        "Break 1 Start": "",
-        "Break 1 End": "",
-        "Break 2 Start": "",
-        "Break 2 End": "",
-        "Break 3 Start": "",
-        "Break 3 End": "",
-        "Break 4 Start": "",
-        "Break 4 End": "",
-        "Total Break Time": "",
-        "Total Work Time": "",
-      };
-
-      const punches = times.map((t) => t.time);
-
-      // Assume: first = Check In, last = Check Out
-      row["Check In"] = punches[0];
-      row["Check Out"] = punches[punches.length - 1];
-
-      const breaks = punches.slice(1, punches.length - 1); // exclude CheckIn and CheckOut
-
-      for (let i = 0; i < breaks.length && i < 8; i += 2) {
-        const breakNum = Math.floor(i / 2) + 1;
-        row[`Break ${breakNum} Start`] = breaks[i];
-        row[`Break ${breakNum} End`] = breaks[i + 1] ?? "";
-      }
-
-      // Time calculations
-      const toMinutes = (time: string) => {
-        const [h, m] = time.split(":").map(Number);
-        return h * 60 + m;
-      };
-
-      const checkInMin = toMinutes(row["Check In"]);
-      const checkOutMin = toMinutes(row["Check Out"]);
-
-      let breakMin = 0;
-      for (let i = 1; i <= 4; i++) {
-        const bStart = row[`Break ${i} Start`];
-        const bEnd = row[`Break ${i} End`];
-        if (bStart && bEnd) {
-          breakMin += toMinutes(bEnd) - toMinutes(bStart);
-        }
-      }
-
-      const totalWorked = checkOutMin - checkInMin - breakMin;
-      row["Total Break Time"] = toHHMM(breakMin);
-      row["Total Work Time"] = toHHMM(totalWorked);
-
-      finalRows.push(row);
-    }
-
-    // Export to XLSX
-    const worksheet = XLSX.utils.json_to_sheet(finalRows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Formatted Attendance");
-
-    const fileName = `attendance-${start_date}_to_${end_date}.xlsx`;
-    const filePath = path.join(process.cwd(), fileName);
-    XLSX.writeFile(workbook, filePath);
-
-    console.log(`✅ Formatted XLSX saved to: ${filePath}`);
-  };
-
   public getMergedAttendanceRecords = async (data: any) => {
     const { start, end, empCode } = data;
     console.log("🔴 start:", start);
@@ -576,9 +371,6 @@ export class TransactionService {
       adjustedStartDate.setUTCHours(0, 0, 0, 0);
       const formattedStartDate = adjustedStartDate.toISOString();
 
-      const deviceUrl = process.env.DEVICE_URL as string;
-      const jwtToken = process.env.JWT_TOKEN as string;
-
       // 🔍 Fast binary search to find maximum working page_size
       const findMaxPageSize = async (): Promise<number> => {
         let low = 1;
@@ -589,19 +381,16 @@ export class TransactionService {
 
         // First, check if a high value works to set upper bound
         const testHigh = async (size: number): Promise<boolean> => {
-          const testUrl = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
-            startDate
-          )}&end_date=${encodeURIComponent(endDate)}&page_size=${size}`;
-          
           console.log(`🔍 Testing page_size=${size}...`);
           
           try {
-            const res: any = await axios.get(testUrl, {
-              headers: {
-                Authorization: `JWT ${jwtToken}`,
-                Accept: "application/json",
+            const res = await zktecoApi.get("att/api/transactionReport/", {
+              params: {
+                start_date: startDate,
+                end_date: endDate,
+                page_size: size
               },
-              validateStatus: () => true,
+              validateStatus: () => true
             });
 
             const isHtmlError = typeof res.data === 'string' && 
@@ -650,24 +439,18 @@ export class TransactionService {
         return best;
       };
 
-      // const optimalPageSize = await findMaxPageSize();
+      const optimalPageSize = await findMaxPageSize();
 
-      let url: string | null = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
+      let url: string | null = `att/api/transactionReport/?start_date=${encodeURIComponent(
         startDate
-      )}&end_date=${encodeURIComponent(endDate)}&page_size=2030`;
+      )}&end_date=${encodeURIComponent(endDate)}&page_size=${optimalPageSize}`;
 
       let allRecords: any[] = [];
 
       // 🔁 Fetch Biotime Data with pagination
       while (url) {
         try {
-          const res: any = await axios.get(url, {
-            headers: {
-              Authorization: `JWT ${jwtToken}`,
-              Accept: "application/json",
-            },
-            validateStatus: () => true,
-          });
+          const res = await zktecoApi.get(url, { validateStatus: () => true });
 
           console.log("Fetching URL:", url);
           console.log("Response status:", res.status);
@@ -1484,9 +1267,7 @@ const getTotalPairedDurationMinutes = (
 
 const getTotalWorkTimeFromBiotimeAPI = async (
   userId: string,
-  date: string,
-  deviceUrl: string,
-  jwtToken: string
+  date: string
 ): Promise<string> => {
   try {
     const dateMoment = moment(date, "MMMM DD, YYYY");
@@ -1497,15 +1278,14 @@ const getTotalWorkTimeFromBiotimeAPI = async (
     const startTime = dateMoment.clone().startOf("day").format("YYYY-MM-DD HH:mm:ss");
     const endTime = dateMoment.clone().endOf("day").format("YYYY-MM-DD HH:mm:ss");
 
-    const response = await axios.get(
-      `${deviceUrl}iclock/api/transactions/?start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&page_size=1000&emp_code=${userId}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `JWT ${jwtToken}`,
-        },
+    const response = await zktecoApi.get("iclock/api/transactions/", {
+      params: {
+        start_time: startTime,
+        end_time: endTime,
+        page_size: 1000,
+        emp_code: userId
       }
-    );
+    });
 
     const punches = response.data?.data;
     if (!Array.isArray(punches) || punches.length === 0) {
@@ -1974,17 +1754,14 @@ export const savePunchCache = async () => {
     isSavingCache = false;
   }
 };
-export const getEmployeeRecord = async (empCode: string, deviceUrl: string, jwtToken: string): Promise<string | undefined> => {
+export const getEmployeeRecord = async (empCode: string): Promise<string | undefined> => {
   if (employeeNicknameCache.has(empCode)) {
     return employeeNicknameCache.get(empCode);
   }
 
   try {
-    const response = await axios.get(`${deviceUrl}personnel/api/employees/`, {
-      params: { emp_code: empCode },
-      headers: {
-        Authorization: `JWT ${jwtToken}`,
-      },
+    const response = await zktecoApi.get("personnel/api/employees/", {
+      params: { emp_code: empCode }
     });
 
     if (response.data?.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
