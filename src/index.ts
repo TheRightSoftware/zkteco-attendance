@@ -5,6 +5,7 @@ import { routes } from "./routes/routes";
 import * as http from "http";
 import { transactionService } from "./services";
 import path from "path";
+import { processFailedMessages } from "./utils/sendMessage";
 
 dotenv.config({ path: ".env" });
 
@@ -47,6 +48,7 @@ const safeFetchTransactions = async () => {
   const startTime = Date.now();
   
   try {
+    await processFailedMessages();
     await transactionService.fetchTransactions();
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`✅ fetchTransactions completed in ${duration}s`);
@@ -67,6 +69,7 @@ const safeGetClockify = async () => {
   const startTime = Date.now();
   
   try {
+    await processFailedMessages();
     await transactionService.getClockify();
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`✅ Clockify check completed in ${duration}s`);
