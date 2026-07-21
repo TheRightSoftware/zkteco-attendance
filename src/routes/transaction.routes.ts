@@ -27,3 +27,6 @@ transactionRouter.get("/exportAttendanceReport", (...args: [Request, Response]) 
 transactionRouter.get("/exportMergedAttendanceReport", (...args: [Request, Response]) =>
   transactionController.exportMergedAttendanceReport(...args)
 );
+transactionRouter.get("/getMergedAttendanceReport", (...args: [Request, Response]) =>
+  transactionController.getMergedAttendanceReport(...args)
+);

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Attendance Analytics Dashboard</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- jsPDF & AutoTable via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+  <div class="glow-bg"></div>
+  <div class="container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <i class="fa-solid fa-business-time pulse-icon"></i>
+        <div>
+          <h1>Attendance Dashboard</h1>
+          <p class="subtitle">ZKTeco & Clockify Integrated Analytics</p>
+        </div>
+      </div>
+      <div class="system-status">
+        <span class="status-indicator online"></span>
+        <span class="status-text">Server Active</span>
+      </div>
+    </header>
+
+    <!-- Filter Section -->
+    <section class="filters-card glass">
+      <form id="filters-form">
+        <div class="input-grid">
+          <div class="input-group">
+            <label for="start-date"><i class="fa-regular fa-calendar"></i> Start Date</label>
+            <input type="date" id="start-date" required>
+          </div>
+          <div class="input-group">
+            <label for="end-date"><i class="fa-regular fa-calendar"></i> End Date</label>
+            <input type="date" id="end-date" required>
+          </div>
+          <div class="input-group">
+            <label for="emp-code"><i class="fa-regular fa-user"></i> Employee Code (Optional)</label>
+            <input type="text" id="emp-code" placeholder="e.g. 1161" autocomplete="off">
+          </div>
+          <div class="input-group">
+            <label for="name-search"><i class="fa-solid fa-signature"></i> Employee Name (Optional)</label>
+            <input type="text" id="name-search" placeholder="e.g. Saqib" autocomplete="off">
+          </div>
+        </div>
+        <div class="button-row">
+          <button type="submit" id="btn-fetch" class="btn btn-primary">
+            <i class="fa-solid fa-magnifying-glass"></i> Fetch Records
+          </button>
+          <button type="button" id="btn-xlsx" class="btn btn-secondary" disabled>
+            <i class="fa-regular fa-file-excel"></i> Export Excel
+          </button>
+          <button type="button" id="btn-pdf" class="btn btn-secondary" disabled>
+            <i class="fa-regular fa-file-pdf"></i> Export PDF
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <div id="navigation-tabs" class="tab-wrapper" style="display: none;">
+      <div class="tab-container glass">
+        <button class="tab-btn active" data-tab="tab-logs">
+          <i class="fa-solid fa-list-check"></i> Merged Logs
+        </button>
+        <button class="tab-btn" data-tab="tab-weekly">
+          <i class="fa-solid fa-calendar-week"></i> Weekly Summary
+        </button>
+        <button class="tab-btn" data-tab="tab-monthly">
+          <i class="fa-solid fa-calendar-days"></i> Monthly Summary
+        </button>
+        <button class="tab-btn" data-tab="tab-period">
+          <i class="fa-solid fa-chart-line"></i> Period Summary
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Results Area -->
+    <main class="results-wrapper">
+      <!-- Loading State -->
+      <div id="loader" class="loader-container" style="display: none;">
+        <div class="spinner"></div>
+        <p class="loader-text">Aggregating ZKTeco & Clockify records...</p>
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-card glass">
+        <i class="fa-regular fa-folder-open empty-icon"></i>
+        <h2>No Data Fetched Yet</h2>
+        <p>Choose a date range above to load the integrated attendance reports.</p>
+      </div>
+
+      <!-- Tab Content: Logs -->
+      <div id="tab-logs" class="tab-content active-content" style="display: none;">
+        <div class="table-card glass">
+          <div class="table-header">
+            <h3>Detailed Attendance Log</h3>
+            <span id="log-count" class="badge">0 rows</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Name</th>
+                  <th>Date</th>
+                  <th>Check In</th>
+                  <th>Check Out</th>
+                  <th>Office Time</th>
+                  <th>Clockify Time</th>
+                  <th>Break Time</th>
+                  <th>Washroom Time</th>
+                  <th>Total Time</th>
+                </tr>
+              </thead>
+              <tbody id="logs-tbody">
+                <!-- Dynamically filled -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Weekly Summary -->
+      <div id="tab-weekly" class="tab-content" style="display: none;">
+        <!-- Filled dynamically with tables for each week -->
+      </div>
+
+      <!-- Tab Content: Monthly Summary -->
+      <div id="tab-monthly" class="tab-content" style="display: none;">
+        <!-- Filled dynamically -->
+      </div>
+
+      <!-- Tab Content: Period Summary -->
+      <div id="tab-period" class="tab-content" style="display: none;">
+        <!-- Filled dynamically -->
+      </div>
+    </main>
+  </div>
+  
+  <script src="app.js"></script>
+</body>
+</html>

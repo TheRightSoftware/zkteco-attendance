@@ -4,6 +4,7 @@ import * as dotenv from "dotenv";
 import { routes } from "./routes/routes";
 import * as http from "http";
 import { transactionService } from "./services";
+import path from "path";
 
 dotenv.config({ path: ".env" });
 
@@ -17,6 +18,7 @@ app.set("port", process.env.PORT || 8081);
 app.set("env", process.env.NODE_ENVR || "development");
 
 app.use("/api", routes);
+app.use(express.static(path.join(__dirname, "public")));
 
 const server: http.Server = http.createServer(app);
 

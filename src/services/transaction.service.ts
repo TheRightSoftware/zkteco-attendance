@@ -560,7 +560,7 @@ export class TransactionService {
     console.log(`✅ Formatted XLSX saved to: ${filePath}`);
   };
 
-  public exportMergedAttendanceReport = async (data: any) => {
+  public getMergedAttendanceRecords = async (data: any) => {
     const { start, end, empCode } = data;
     console.log("🔴 start:", start);
 
@@ -571,6 +571,10 @@ export class TransactionService {
       const adjustedEndDate = new Date(end);
       adjustedEndDate.setUTCHours(23, 59, 59, 999);
       const formattedEndDate = adjustedEndDate.toISOString();
+
+      const adjustedStartDate = new Date(start);
+      adjustedStartDate.setUTCHours(0, 0, 0, 0);
+      const formattedStartDate = adjustedStartDate.toISOString();
 
       const deviceUrl = process.env.DEVICE_URL as string;
       const jwtToken = process.env.JWT_TOKEN as string;
@@ -646,11 +650,11 @@ export class TransactionService {
         return best;
       };
 
-      const optimalPageSize = await findMaxPageSize();
+      // const optimalPageSize = await findMaxPageSize();
 
       let url: string | null = `${deviceUrl}att/api/transactionReport/?start_date=${encodeURIComponent(
         startDate
-      )}&end_date=${encodeURIComponent(endDate)}&page_size=${optimalPageSize}`;
+      )}&end_date=${encodeURIComponent(endDate)}&page_size=2030`;
 
       let allRecords: any[] = [];
 
@@ -710,7 +714,7 @@ export class TransactionService {
 
       if (!allRecords.length) {
         console.log("⚠️ No Biotime attendance records found.");
-        return;
+        return { cleanRows: [], startDate, endDate };
       }
 
 
@@ -872,7 +876,6 @@ export class TransactionService {
       // 🔁 FETCH CLOCKIFY
       const users = await getUsers();
       const clockifyMap = new Map<string, any>();
-      const unmatchedClockifyRows: any[] = [];
 
       const targetNames = new Set(
         finalRows.map((row) => row.Name?.trim().toLowerCase()).filter(Boolean)
@@ -889,7 +892,7 @@ export class TransactionService {
         do {
           const res = await clockify.get(
             `/workspaces/${WORKSPACE_ID}/user/${user.id}/time-entries`,
-            { params: { start, end: formattedEndDate, page, "page-size": pageSize } }
+            { params: { start: formattedStartDate, end: formattedEndDate, page, "page-size": pageSize } }
           );
           const pageEntries = res.data || [];
           entries = entries.concat(pageEntries);
@@ -908,29 +911,29 @@ export class TransactionService {
 
         for (const date in groupedByDate) {
           const dayEntries = groupedByDate[date];
-          // Sort by start time so sessions are in order
           dayEntries.sort(
             (a: any, b: any) =>
               new Date(a.timeInterval.start).getTime() -
-              new Date(b.timeInterval.start).getTime()
+              new Date(b.timeInterval.end).getTime()
           );
 
-          // Sum actual worked time from each entry (handles multiple check-in/check-out)
           let totalDurationMs = 0;
           const sessions: { checkIn: string; checkOut: string }[] = [];
           for (const entry of dayEntries) {
             const start = new Date(entry.timeInterval.start);
             const end = new Date(entry.timeInterval.end);
             const entryDurationMs = end.getTime() - start.getTime();
-            totalDurationMs += entryDurationMs;
+            if (entryDurationMs > 0) totalDurationMs += entryDurationMs;
+
             sessions.push({
               checkIn: start.toLocaleTimeString(),
               checkOut: end.toLocaleTimeString(),
             });
           }
 
-          const firstCheckIn = sessions[0]?.checkIn ?? "";
-          const lastCheckOut = sessions[sessions.length - 1]?.checkOut ?? "";
+          const firstCheckIn = sessions[0]?.checkIn || "";
+          const lastCheckOut = sessions[sessions.length - 1]?.checkOut || "";
+
           const totalMin = Math.floor(totalDurationMs / (1000 * 60));
           const h = Math.floor(totalMin / 60);
           const m = totalMin % 60;
@@ -1052,26 +1055,29 @@ export class TransactionService {
         }
       }
 
-      // Export
       const cleanRows = finalRows.map(({ OfficeWorkMinutes, ...rest }) => rest);
-      const worksheet = XLSX.utils.json_to_sheet(cleanRows);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Merged Attendance");
+      return { cleanRows, startDate, endDate };
 
-      // const fileName = `attendance-merged-${startDate}_to_${endDate}.xlsx`;
-      // const filePath = path.join(process.cwd(), fileName);
-      // XLSX.writeFile(workbook, filePath);
+    } catch (error: any) {
+      console.log("🔴 Error in getMergedAttendanceRecords:", error);
+      throw error;
+    }
+  };
 
-      // ➕ Weekly & Monthly Summary Sheets
+  public getMergedAttendanceJSON = async (data: any) => {
+    try {
+      const { cleanRows, startDate, endDate } = await this.getMergedAttendanceRecords(data);
+      if (!cleanRows || cleanRows.length === 0) {
+        return { records: [], summaries: { weekly: [], monthly: [], fullPeriod: [] } };
+      }
+      
       const groupBy = (
         rows: any[],
         granularity: "week" | "month" | "period"
       ) => {
         const map: Record<string, any> = {};
-        const givenStart = moment(startDate).startOf("day"); // the user-provided start
-
-        // First week end: if start is Monday this becomes Sunday of that week; if start is any other day it becomes the upcoming Sunday.
-        const firstWeekEnd = givenStart.clone().endOf("isoWeek"); // ISO week: Monday–Sunday
+        const givenStart = moment(startDate).startOf("day");
+        const firstWeekEnd = givenStart.clone().endOf("isoWeek");
 
         for (const row of rows) {
           const date = moment(row.Date, "YYYY-MM-DD").startOf("day");
@@ -1081,17 +1087,11 @@ export class TransactionService {
             key = "Full Period Summary";
           } else if (granularity === "week") {
             if (date.isBetween(givenStart, firstWeekEnd, "day", "[]")) {
-              // falls in the initial partial/full week from givenStart to the first Sunday
-              key = `week-${givenStart.format(
-                "YYYY-MM-DD"
-              )}-to-${firstWeekEnd.format("YYYY-MM-DD")}`;
+              key = `week-${givenStart.format("YYYY-MM-DD")}-to-${firstWeekEnd.format("YYYY-MM-DD")}`;
             } else {
-              // subsequent regular ISO weeks (Monday to Sunday)
               const weekStart = date.clone().startOf("isoWeek");
               const weekEnd = date.clone().endOf("isoWeek");
-              key = `week-${weekStart.format("YYYY-MM-DD")}-to-${weekEnd.format(
-                "YYYY-MM-DD"
-              )}`;
+              key = `week-${weekStart.format("YYYY-MM-DD")}-to-${weekEnd.format("YYYY-MM-DD")}`;
             }
           } else {
             key = `month-${moment(date).format("YYYY-MM")}`;
@@ -1126,14 +1126,10 @@ export class TransactionService {
             return h * 60 + m;
           };
 
-          user["Total Office Work Minutes"] += toMinutes(
-            row["Office Work Time"]
-          );
+          user["Total Office Work Minutes"] += toMinutes(row["Office Work Time"]);
           user["Total Break Minutes"] += toMinutes(row["Total Break Time"]);
           user["Total Washroom Minutes"] += toMinutes(row["Total Washroom Time"]);
-          user["Total Clockify Minutes"] += toMinutes(
-            row["Clockify Worked Hours"]
-          );
+          user["Total Clockify Minutes"] += toMinutes(row["Clockify Worked Hours"]);
           user["Total Work Minutes"] += toMinutes(row["Total Work Time"]);
         }
 
@@ -1149,9 +1145,7 @@ export class TransactionService {
           const rows = Object.values(users).map((user: any) => {
             return {
               Name: user.Name,
-              "Total Office Work Time": toHHMM(
-                user["Total Office Work Minutes"]
-              ),
+              "Total Office Work Time": toHHMM(user["Total Office Work Minutes"]),
               "Total Break Time": toHHMM(user["Total Break Minutes"]),
               "Total Washroom Time": toHHMM(user["Total Washroom Minutes"]),
               "Total Clockify Time": toHHMM(user["Total Clockify Minutes"]),
@@ -1162,7 +1156,130 @@ export class TransactionService {
           return { sheetName, rows };
         });
 
-      // ➕ Append sheets to Excel (weekly, monthly, then one sheet for whole date range)
+      return {
+        records: cleanRows,
+        summaries: {
+          weekly: formatSummary(weekly),
+          monthly: formatSummary(monthly),
+          fullPeriod: formatSummary(fullPeriod)
+        }
+      };
+    } catch (error: any) {
+      console.log("🔴 Error in getMergedAttendanceJSON:", error);
+      const status = error?.response?.status;
+      if (status === 401 || error?.response?.data?.code === "token_not_valid") {
+        console.warn("🔒 Token expired. Fetching new token...");
+        const newToken = await this.getJWTToken({
+          userName: process.env.DEVICE_USERNAME as string,
+          Password: process.env.DEVICE_PASSWORD as string,
+        });
+
+        process.env.JWT_TOKEN = newToken;
+        const response: any = await this.getMergedAttendanceJSON(data);
+        return response;
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  public exportMergedAttendanceReport = async (data: any) => {
+    try {
+      const { cleanRows, startDate, endDate } = await this.getMergedAttendanceRecords(data);
+      if (!cleanRows || cleanRows.length === 0) {
+        throw new Error("No attendance records to export.");
+      }
+
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(cleanRows);
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Merged Attendance");
+
+      // ➕ Weekly & Monthly Summary Sheets
+      const groupBy = (
+        rows: any[],
+        granularity: "week" | "month" | "period"
+      ) => {
+        const map: Record<string, any> = {};
+        const givenStart = moment(startDate).startOf("day");
+        const firstWeekEnd = givenStart.clone().endOf("isoWeek");
+
+        for (const row of rows) {
+          const date = moment(row.Date, "YYYY-MM-DD").startOf("day");
+
+          let key: string;
+          if (granularity === "period") {
+            key = "Full Period Summary";
+          } else if (granularity === "week") {
+            if (date.isBetween(givenStart, firstWeekEnd, "day", "[]")) {
+              key = `week-${givenStart.format("YYYY-MM-DD")}-to-${firstWeekEnd.format("YYYY-MM-DD")}`;
+            } else {
+              const weekStart = date.clone().startOf("isoWeek");
+              const weekEnd = date.clone().endOf("isoWeek");
+              key = `week-${weekStart.format("YYYY-MM-DD")}-to-${weekEnd.format("YYYY-MM-DD")}`;
+            }
+          } else {
+            key = `month-${moment(date).format("YYYY-MM")}`;
+          }
+
+          if (!map[key]) map[key] = {};
+          const userKey = row.Name?.trim().toLowerCase();
+
+          if (!map[key][userKey]) {
+            map[key][userKey] = {
+              Name: row.Name?.trim(),
+              "Total Office Work Minutes": 0,
+              "Total Break Minutes": 0,
+              "Total Washroom Minutes": 0,
+              "Total Clockify Minutes": 0,
+              "Total Work Minutes": 0,
+            };
+          }
+
+          const user = map[key][userKey];
+
+          const toMinutes = (str: string) => {
+            if (!str || typeof str !== "string") return 0;
+            const match = str.match(/^(\d{1,2})h\s?(\d{1,2})?m?$/i);
+            if (match) {
+              const h = parseInt(match[1] || "0", 10);
+              const m = parseInt(match[2] || "0", 10);
+              return h * 60 + m;
+            }
+            const [h, m] = str.split(":").map(Number);
+            if (isNaN(h) || isNaN(m)) return 0;
+            return h * 60 + m;
+          };
+
+          user["Total Office Work Minutes"] += toMinutes(row["Office Work Time"]);
+          user["Total Break Minutes"] += toMinutes(row["Total Break Time"]);
+          user["Total Washroom Minutes"] += toMinutes(row["Total Washroom Time"]);
+          user["Total Clockify Minutes"] += toMinutes(row["Clockify Worked Hours"]);
+          user["Total Work Minutes"] += toMinutes(row["Total Work Time"]);
+        }
+
+        return map;
+      };
+
+      const weekly = groupBy(cleanRows, "week");
+      const monthly = groupBy(cleanRows, "month");
+      const fullPeriod = groupBy(cleanRows, "period");
+
+      const formatSummary = (group: Record<string, any>) =>
+        Object.entries(group).map(([sheetName, users]) => {
+          const rows = Object.values(users).map((user: any) => {
+            return {
+              Name: user.Name,
+              "Total Office Work Time": toHHMM(user["Total Office Work Minutes"]),
+              "Total Break Time": toHHMM(user["Total Break Minutes"]),
+              "Total Washroom Time": toHHMM(user["Total Washroom Minutes"]),
+              "Total Clockify Time": toHHMM(user["Total Clockify Minutes"]),
+              "Total Work Time": toHHMM(user["Total Work Minutes"]),
+            };
+          });
+
+          return { sheetName, rows };
+        });
+
       [
         ...formatSummary(weekly),
         ...formatSummary(monthly),
@@ -1173,31 +1290,21 @@ export class TransactionService {
       });
 
       const fileName = `${startDate}_to_${endDate}.xlsx`;
-      // const filePath = path.join(process.cwd(), fileName);
-      // XLSX.writeFile(workbook, filePath);
       return { workbook, fileName };
-      console.log(`✅ Final merged XLSX saved to: ${filePath}`);
+
     } catch (error: any) {
       console.log("🔴 Error:", error);
-
       const status = error?.response?.status;
       if (status === 401 || error?.response?.data?.code === "token_not_valid") {
         console.warn("🔒 Token expired. Fetching new token...");
-        try {
-          const newToken = await this.getJWTToken({
-            userName: process.env.DEVICE_USERNAME as string,
-            Password: process.env.DEVICE_PASSWORD as string,
-          });
+        const newToken = await this.getJWTToken({
+          userName: process.env.DEVICE_USERNAME as string,
+          Password: process.env.DEVICE_PASSWORD as string,
+        });
 
-          process.env.JWT_TOKEN = newToken;
-          jwtToken = newToken;
-          // Retry the entire operation with new token
-          const response: any = await this.exportMergedAttendanceReport(data);
-          return response;
-        } catch (retryError: any) {
-          console.error("❌ Retry failed after token refresh:", retryError);
-          throw retryError;
-        }
+        process.env.JWT_TOKEN = newToken;
+        const response: any = await this.exportMergedAttendanceReport(data);
+        return response;
       } else {
         throw error;
       }
