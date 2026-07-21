@@ -1,6 +1,8 @@
 import axios from "axios";
 import moment from "moment";
 import winston from "winston";
+import fs from "fs";
+import path from "path";
 
 const logger = winston.createLogger({
   level: "info",
@@ -36,30 +38,35 @@ const postMessageTarget = (
   return { channel: `@${t}` };
 };
 
-export const sendMessage = async (
-  firstName: string,
+const failedMessagesFilePath = path.join(__dirname, "../utils/failedMessages.json");
+
+export interface FailedMessage {
+  firstName: string;
+  punchTime: string;
+  punchState: string;
+  project?: string;
+  isFromClockify: boolean;
+  rocketChatUsername?: string;
+  user_Id?: string;
+  maxRetries: number;
+  delayMs: number;
+  roomIdOverride?: string;
+}
+
+let isProcessingQueue = false;
+
+// Core HTTP post logic
+const sendRawMessage = async (
+  message: string,
   punchTime: string,
-  punchState: string,
-  project?: string,
-  isFromClockify: boolean = false,
-  rocketChatUsername?: string,
-  user_Id?: string,
-  maxRetries = 3,
-  delayMs = 1000,
+  firstName: string,
   roomIdOverride?: string,
-) => {
+  maxRetries = 3,
+  delayMs = 1000
+): Promise<boolean> => {
   const rocketChatServer = process.env.ROCKET_CHAT_SERVER_URL as string;
   const authToken = process.env.ROCKET_CHAT_AUTH_TOKEN as string;
   const userId = process.env.ROCKET_CHAT_USER_ID as string;
-
-  const formattedTime = moment(punchTime).format("h:mm A");
-  let message = isFromClockify
-    ? `${firstName}${project ? ` | ${project}` : ""} | ${formattedTime} | ${punchState}`
-    : `${rocketChatUsername ? `@${rocketChatUsername} (${user_Id})` : firstName} | ${formattedTime} | ${punchState}`;
-  
-  // if (rocketChatUsername) {
-  //   message = `@${rocketChatUsername} ${message}`;
-  // }
 
   let attempt = 0;
 
@@ -73,7 +80,7 @@ export const sendMessage = async (
         ...postMessageTarget(target),
       };
 
-      const res = await axios.post(
+      await axios.post(
         `${rocketChatServer}/api/v1/chat.postMessage`,
         payload,
         {
@@ -85,8 +92,8 @@ export const sendMessage = async (
         }
       );
 
-      logger.info(`✅ Sent for ${firstName}: ${formattedTime}`);
-      return;
+      logger.info(`✅ Sent for ${firstName}: ${moment(punchTime).format("h:mm A")}`);
+      return true;
 
     } catch (error: any) {
       const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
@@ -107,11 +114,130 @@ export const sendMessage = async (
       if (attempt < maxRetries) {
         logger.info(`⏳ Retrying in ${waitTime / 1000}s...`);
         await new Promise(res => setTimeout(res, waitTime));
-      } else {
-        logger.error(`❌ All ${maxRetries} attempts failed.`);
-        throw error;
       }
     }
   }
+  return false;
 };
 
+// Queue file readers/writers
+const loadFailedMessages = (): FailedMessage[] => {
+  try {
+    if (fs.existsSync(failedMessagesFilePath)) {
+      const data = fs.readFileSync(failedMessagesFilePath, "utf-8").trim();
+      return data ? JSON.parse(data) : [];
+    }
+  } catch (err) {
+    logger.error("❌ Failed to load failed messages from file:", err);
+  }
+  return [];
+};
+
+const saveFailedMessages = (list: FailedMessage[]) => {
+  try {
+    // Ensure directory exists
+    const dir = path.dirname(failedMessagesFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(failedMessagesFilePath, JSON.stringify(list, null, 2), "utf-8");
+  } catch (err) {
+    logger.error("❌ Failed to save failed messages to file:", err);
+  }
+};
+
+const queueFailedMessage = (msg: FailedMessage) => {
+  const list = loadFailedMessages();
+  const exists = list.some(
+    item => item.firstName === msg.firstName && 
+            item.punchTime === msg.punchTime && 
+            item.punchState === msg.punchState
+  );
+  if (!exists) {
+    list.push(msg);
+    saveFailedMessages(list);
+  }
+};
+
+export const sendMessage = async (
+  firstName: string,
+  punchTime: string,
+  punchState: string,
+  project?: string,
+  isFromClockify: boolean = false,
+  rocketChatUsername?: string,
+  user_Id?: string,
+  maxRetries = 3,
+  delayMs = 1000,
+  roomIdOverride?: string,
+) => {
+  // Try processing the failed queue if we're not currently doing so
+  if (!isProcessingQueue) {
+    await processFailedMessages();
+  }
+
+  const formattedTime = moment(punchTime).format("h:mm A");
+  const message = isFromClockify
+    ? `${firstName}${project ? ` | ${project}` : ""} | ${formattedTime} | ${punchState}`
+    : `${rocketChatUsername ? `@${rocketChatUsername} (${user_Id})` : firstName} | ${formattedTime} | ${punchState}`;
+
+  const success = await sendRawMessage(message, punchTime, firstName, roomIdOverride, maxRetries, delayMs);
+  
+  if (!success) {
+    queueFailedMessage({
+      firstName,
+      punchTime,
+      punchState,
+      project,
+      isFromClockify,
+      rocketChatUsername,
+      user_Id,
+      maxRetries,
+      delayMs,
+      roomIdOverride
+    });
+    logger.error(`💾 Saved failed message to queue for persistence: ${firstName} (${punchTime})`);
+  }
+};
+
+export const processFailedMessages = async () => {
+  if (isProcessingQueue) return;
+  isProcessingQueue = true;
+
+  try {
+    const list = loadFailedMessages();
+    if (list.length === 0) {
+      isProcessingQueue = false;
+      return;
+    }
+
+    logger.info(`🔄 Processing persistent failed messages queue (${list.length} pending)...`);
+    const remaining: FailedMessage[] = [];
+
+    for (const msg of list) {
+      const formattedTime = moment(msg.punchTime).format("h:mm A");
+      const message = msg.isFromClockify
+        ? `${msg.firstName}${msg.project ? ` | ${msg.project}` : ""} | ${formattedTime} | ${msg.punchState}`
+        : `${msg.rocketChatUsername ? `@${msg.rocketChatUsername} (${msg.user_Id})` : msg.firstName} | ${formattedTime} | ${msg.punchState}`;
+
+      // Try sending with a rate limit delay, and fewer retries to keep it fast
+      const success = await sendRawMessage(message, msg.punchTime, msg.firstName, msg.roomIdOverride, 2, msg.delayMs);
+      if (!success) {
+        const index = list.indexOf(msg);
+        remaining.push(...list.slice(index));
+        logger.warn(`⏸️ A queued message failed to send. Pausing queue flushing to prevent out of order messages.`);
+        break;
+      }
+      
+      // Delay slightly between queue items to prevent rate limits
+      await new Promise(res => setTimeout(res, 2000));
+    }
+
+    saveFailedMessages(remaining);
+    logger.info(`✅ Finished processing failed messages queue. Remaining: ${remaining.length}`);
+  } catch (err) {
+    logger.error("❌ Error processing failed messages queue:", err);
+  } finally {
+    isProcessingQueue = false;
+  }
+};
